@@ -6,32 +6,6 @@ Converts live HLS streams (TS or fMP4 segments) to MPEG Transport Stream with pr
 
 ## Architecture
 
-```
-                  manifest_monitor.py              launch_tsp.sh
-                 +--------------------+           +------------------------+
-  HLS Source     | Poll manifest      |           |                        |
-  +----------+   | Detect CUE-OUT/IN  |           | tsp -I hls     (TS)   |
-  | .m3u8    |-->| Detect DATERANGE   |           | ffmpeg | tsp   (fMP4) |
-  | .ts/.m4s |   | Detect EXT-X-KEY   |           | ffmpeg | tsp   (DRM)  |
-  +----------+   | PTS calibration    |           |                        |
-                 |                    | splice.xml| -P continuity          |
-                 | drm_key_provider   |---------->| -P pmt (SCTE-35 0x86) |
-                 |                    | splice.bin| -P inject xml (PID500) |
-                 | prometheus_metrics |---------->| -P inject bin (PID500) |
-                 +--------------------+           | -P tables (log)        |
-                                                  | -P regulate            |
-                 +--------------------+           | -O file / udp / srt    |
-                 | api_server.py      |           +------------------------+
-                 |                    |
-                 | /api/v1/pipelines  |  Manages both monitor + tsp
-                 | /api/v1/metrics    |  Process supervisor
-                 | API key auth       |  Multi-pipeline registry
-                 +--------------------+
-```
-
-<details>
-<summary>Interactive diagram (click to expand)</summary>
-
 ```mermaid
 graph LR
     subgraph Source["HLS Source"]
@@ -99,9 +73,7 @@ graph LR
     PROM --> METRICS
 ```
 
-</details>
-
-Full Mermaid source: [docs/architecture.mmd](docs/architecture.mmd)
+Full diagram source: [docs/architecture.mmd](docs/architecture.mmd)
 
 ### Signal Detection
 
