@@ -51,6 +51,8 @@ except ImportError:
 import m3u8
 import requests
 
+from prometheus_metrics import metrics as prom
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -236,6 +238,7 @@ class ManifestMonitor:
         )
         self._calibration_attempts = 0
         self._start_time: float | None = None
+        prom.set("pts_calibration_status", -1.0 if not self._calibration_enabled else 0.0)
 
         # DRM detection state
         drm_config = config.get("drm", {})
@@ -272,12 +275,14 @@ class ManifestMonitor:
             if uri and uri != self._last_key_uri:
                 if self._last_key_uri is not None:
                     self._drm_key_rotation_count += 1
+                    prom.inc("drm_key_rotations_total")
                     self.logger.info(
                         f"DRM key rotation detected (count={self._drm_key_rotation_count})"
                     )
                 self._last_key_uri = uri
 
             if self.drm_detected is None:
+                prom.set("drm_detected", 1.0)
                 self.logger.info(
                     f"DRM detected: method={method} keyformat={keyformat}"
                 )
@@ -343,6 +348,7 @@ class ManifestMonitor:
         """Queue a splice command XML fragment. Written to file after full poll."""
         self.pending_commands.append(xml_fragment)
         self.logger.info(f"Queued splice command: {label}")
+        prom.inc("scte35_events_injected_total", labels={"format": "xml"})
 
     def _queue_raw_section(self, raw_bytes: bytes, label: str):
         """Queue a raw SCTE-35 binary section for direct injection."""
@@ -355,6 +361,7 @@ class ManifestMonitor:
 
         self.pending_raw_sections.append(raw_bytes)
         self.logger.info(f"Queued raw SCTE-35 section: {label}")
+        prom.inc("scte35_events_injected_total", labels={"format": "binary"})
 
     def _flush_commands(self):
         """Write all pending commands (XML and raw binary) to inject files."""
@@ -489,6 +496,7 @@ class ManifestMonitor:
         probed_pts = self._probe_actual_pts(playlist)
         if probed_pts is None:
             self._calibration_attempts += 1
+            prom.inc("pts_calibration_attempts_total")
             if self._calibration_attempts >= self._calibration_warn_after:
                 self.logger.warning(
                     f"PTS calibration: probe failed {self._calibration_attempts} times. "
@@ -502,6 +510,7 @@ class ManifestMonitor:
         old_base = self.pts_base
         self.pts_base = probed_pts
         self._pts_calibrated = True
+        prom.set("pts_calibration_status", 1.0)
         offset = probed_pts - old_base
         self.logger.info(
             f"PTS calibrated: probed={probed_pts} "
@@ -523,6 +532,7 @@ class ManifestMonitor:
             f"CUE-OUT detected: event_id={event_id} "
             f"duration={dur}s media_seq={media_sequence}"
         )
+        prom.inc("scte35_events_detected_total", labels={"type": "cue_out"})
 
         xml = build_splice_insert_xml(
             event_id=event_id,
@@ -543,6 +553,7 @@ class ManifestMonitor:
         self.logger.info(
             f"CUE-IN detected: event_id={event_id} media_seq={media_sequence}"
         )
+        prom.inc("scte35_events_detected_total", labels={"type": "cue_in"})
 
         xml = build_splice_insert_xml(
             event_id=event_id,
@@ -580,6 +591,7 @@ class ManifestMonitor:
             f"DATERANGE {dr_id}: {cmd_name} (0x{cmd_type:02X}) "
             f"raw_len={len(raw_bytes) if raw_bytes else 0}"
         )
+        prom.inc("scte35_events_detected_total", labels={"type": cmd_name})
 
         if decoded.get("error"):
             self.logger.warning(
@@ -703,10 +715,14 @@ class ManifestMonitor:
 
     def poll_once(self):
         """Fetch manifest and process SCTE-35 signals."""
+        poll_start = time.monotonic()
+        prom.inc("manifest_poll_total")
+
         try:
             resp = self.session.get(self.source_url, timeout=10)
             resp.raise_for_status()
         except requests.RequestException as e:
+            prom.inc("manifest_poll_errors_total")
             self.logger.error(f"Failed to fetch manifest: {e}")
             return
 
@@ -772,6 +788,11 @@ class ManifestMonitor:
 
         # Adapt poll interval for low-latency HLS
         self.poll_interval = self._adapt_poll_interval(playlist)
+
+        # Update gauges
+        prom.observe("manifest_poll_duration_seconds", time.monotonic() - poll_start)
+        prom.set("seen_cues_size", float(len(self._seen_cues)))
+        prom.set("seen_raw_hashes_size", float(len(self._seen_raw_hashes)))
 
     def _adapt_poll_interval(self, playlist) -> float:
         """

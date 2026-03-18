@@ -36,7 +36,9 @@ try:
 except ImportError:
     import tomli as tomllib
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
+
+from prometheus_metrics import metrics as prom, render_prometheus
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -125,30 +127,30 @@ def require_api_key(f):
 # ---------------------------------------------------------------------------
 
 class Metrics:
-    """Simple in-memory metrics counters for observability."""
+    """Bridges the old JSON metrics API with the shared Prometheus store."""
 
     def __init__(self):
-        self._lock = threading.Lock()
-        self.pipelines_created = 0
-        self.pipelines_stopped = 0
-        self.pipelines_failed = 0
-        self.restarts_total = 0
         self.start_time = time.monotonic()
 
     def inc(self, counter: str, amount: int = 1):
-        with self._lock:
-            current = getattr(self, counter, 0)
-            setattr(self, counter, current + amount)
+        # Map old counter names to Prometheus names
+        name_map = {
+            "pipelines_created": "pipelines_created_total",
+            "pipelines_stopped": "pipelines_stopped_total",
+            "pipelines_failed": "pipelines_failed_total",
+            "restarts_total": "pipeline_restarts_total",
+        }
+        prom_name = name_map.get(counter, counter)
+        prom.inc(prom_name, amount)
 
     def snapshot(self) -> dict:
-        with self._lock:
-            return {
-                "pipelines_created": self.pipelines_created,
-                "pipelines_stopped": self.pipelines_stopped,
-                "pipelines_failed": self.pipelines_failed,
-                "restarts_total": self.restarts_total,
-                "uptime_seconds": round(time.monotonic() - self.start_time, 1),
-            }
+        return {
+            "pipelines_created": int(prom.get("pipelines_created_total")),
+            "pipelines_stopped": int(prom.get("pipelines_stopped_total")),
+            "pipelines_failed": int(prom.get("pipelines_failed_total")),
+            "restarts_total": int(prom.get("pipeline_restarts_total")),
+            "uptime_seconds": round(time.monotonic() - self.start_time, 1),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -386,8 +388,14 @@ class Pipeline:
             tsp_alive = self.tsp_proc and self.tsp_proc.poll() is None
             mon_alive = self.monitor_proc and self.monitor_proc.poll() is None
 
+            # Update pipeline state gauge
             if tsp_alive and mon_alive:
+                prom.set("pipeline_state", 1.0, labels={"id": self.id})
                 continue  # both healthy
+            elif tsp_alive or mon_alive:
+                prom.set("pipeline_state", 0.5, labels={"id": self.id})
+            else:
+                prom.set("pipeline_state", 0.0, labels={"id": self.id})
 
             if self._supervisor_stop.is_set():
                 break  # intentional shutdown
@@ -420,6 +428,7 @@ class Pipeline:
                         env=self._proc_env,
                     )
                     self._restart_times.append(now)
+                    prom.inc("pipeline_restarts_total", labels={"id": self.id, "process": "tsp"})
                 except Exception as e:
                     logger.error("Pipeline %s: tsp restart failed: %s", self.id, e)
 
@@ -437,6 +446,7 @@ class Pipeline:
                         env=self._proc_env,
                     )
                     self._restart_times.append(now)
+                    prom.inc("pipeline_restarts_total", labels={"id": self.id, "process": "monitor"})
                 except Exception as e:
                     logger.error("Pipeline %s: monitor restart failed: %s", self.id, e)
 
@@ -569,7 +579,15 @@ def create_app(config_path: str) -> Flask:
     @app.route("/api/v1/metrics", methods=["GET"])
     @require_api_key
     def get_metrics():
-        """Return pipeline metrics and counters."""
+        """Return pipeline metrics. Prometheus format if Accept header requests it."""
+        # Update active pipeline count gauge
+        prom.set("active_pipelines", float(len(registry.list_all())))
+
+        accept = request.headers.get("Accept", "")
+        if "text/plain" in accept or "application/openmetrics" in accept:
+            return Response(render_prometheus(), mimetype="text/plain; version=0.0.4")
+
+        # JSON fallback for backwards compat
         data = metrics.snapshot()
         data["active_pipelines"] = len(registry.list_all())
         return jsonify(data)

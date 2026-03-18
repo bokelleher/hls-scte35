@@ -89,17 +89,13 @@ class TestValidateOutputPath:
 
 
 class TestMetrics:
-    def test_initial_values(self):
-        m = Metrics()
-        snap = m.snapshot()
-        assert snap["pipelines_created"] == 0
-        assert snap["pipelines_stopped"] == 0
-
     def test_increment(self):
         m = Metrics()
+        before = m.snapshot()["pipelines_created"]
         m.inc("pipelines_created")
         m.inc("pipelines_created")
-        assert m.snapshot()["pipelines_created"] == 2
+        after = m.snapshot()["pipelines_created"]
+        assert after - before == 2
 
     def test_uptime(self):
         m = Metrics()
