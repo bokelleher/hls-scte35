@@ -123,6 +123,25 @@ services:
 
 ## Grafana Dashboard
 
+### Import Pre-Built Dashboard
+
+A ready-to-use dashboard JSON is included in the repo:
+
+**Via Grafana UI:**
+1. Go to Dashboards → Import
+2. Upload `docs/grafana-dashboard.json`
+3. Select your Prometheus data source
+4. Click Import
+
+**Via Grafana API:**
+```bash
+curl -X POST http://admin:admin@localhost:3000/api/dashboards/db \
+  -H "Content-Type: application/json" \
+  -d @docs/grafana-dashboard.json
+```
+
+The dashboard includes 16 panels across 5 rows: pipeline health, SCTE-35 signals, polling & calibration, internal state, and system resources (CPU/memory).
+
 ### Recommended Panels
 
 **Row 1 — Signal Detection**
