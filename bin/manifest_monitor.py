@@ -146,12 +146,17 @@ SCTE35_COMMAND_NAMES = {
 }
 
 
-def decode_daterange_scte35(scte35_cmd_b64: str) -> dict:
+def decode_daterange_scte35(scte35_value: str) -> dict:
     """
-    Decode the SCTE35-CMD base64 attribute from EXT-X-DATERANGE.
+    Decode the SCTE35-CMD/OUT/IN attribute from EXT-X-DATERANGE.
+    Handles both hex (0x...) and base64 encoded values.
     Returns a dict with splice_command_type, command name, and raw bytes.
     """
-    raw = base64.b64decode(scte35_cmd_b64)
+    scte35_value = scte35_value.strip()
+    if scte35_value.startswith("0x") or scte35_value.startswith("0X"):
+        raw = bytes.fromhex(scte35_value[2:])
+    else:
+        raw = base64.b64decode(scte35_value)
     if len(raw) < 14:
         return {"raw_hex": raw.hex(), "raw_bytes": raw, "error": "section too short"}
 
@@ -698,6 +703,38 @@ class ManifestMonitor:
     _RE_EXTINF = re.compile(
         r"#EXTINF:\s*(\d+(?:\.\d+)?)",
     )
+    _RE_DATERANGE = re.compile(
+        r"#EXT-X-DATERANGE:(.*)",
+        re.IGNORECASE,
+    )
+
+    def _parse_daterange_tags(self, manifest_text: str):
+        """
+        Parse EXT-X-DATERANGE tags directly from manifest text using regex.
+        The m3u8 library (v6) doesn't expose dateranges, so we parse them ourselves.
+        """
+        for match in self._RE_DATERANGE.finditer(manifest_text):
+            attrs_str = match.group(1)
+
+            # Parse key=value pairs (handles quoted and unquoted values)
+            attrs = {}
+            for attr_match in re.finditer(r'([A-Z0-9_-]+)=(?:"([^"]*)"|([^,]*))', attrs_str):
+                key = attr_match.group(1).lower().replace("-", "_")
+                value = attr_match.group(2) if attr_match.group(2) is not None else attr_match.group(3)
+                attrs[key] = value
+
+            dr_dict = {
+                "id": attrs.get("id"),
+                "start_date": attrs.get("start_date", ""),
+                "duration": attrs.get("duration"),
+                "planned_duration": attrs.get("planned_duration"),
+                "scte35_cmd": attrs.get("scte35_cmd"),
+                "scte35_out": attrs.get("scte35_out"),
+                "scte35_in": attrs.get("scte35_in"),
+            }
+
+            if dr_dict["scte35_cmd"] or dr_dict["scte35_out"] or dr_dict["scte35_in"]:
+                self._process_daterange(dr_dict)
 
     def _parse_cue_tags(self, manifest_text: str, media_sequence: int):
         """
@@ -809,21 +846,9 @@ class ManifestMonitor:
         if self.mode in ("auto_detect", "manifest_only"):
             self._parse_cue_tags(resp.text, playlist.media_sequence or 0)
 
-        # Process EXT-X-DATERANGE tags
+        # Process EXT-X-DATERANGE tags using regex (m3u8 v6 doesn't parse them)
         if self.mode in ("auto_detect", "manifest_only"):
-            if hasattr(playlist, "dateranges"):
-                for dr in playlist.dateranges:
-                    dr_dict = {
-                        "id": getattr(dr, "id", None),
-                        "start_date": str(getattr(dr, "start_date", "")),
-                        "duration": getattr(dr, "duration", None),
-                        "planned_duration": getattr(dr, "planned_duration", None),
-                        "scte35_cmd": getattr(dr, "scte35_cmd", None),
-                        "scte35_out": getattr(dr, "scte35_out", None),
-                        "scte35_in": getattr(dr, "scte35_in", None),
-                    }
-                    if dr_dict["scte35_cmd"] or dr_dict["scte35_out"] or dr_dict["scte35_in"]:
-                        self._process_daterange(dr_dict)
+            self._parse_daterange_tags(resp.text)
 
         # Flush all queued commands to the inject file
         self._flush_commands()
