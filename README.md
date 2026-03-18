@@ -231,6 +231,8 @@ curl -X DELETE http://localhost:8080/api/v1/pipelines
 
 ## REST API Reference
 
+Full OpenAPI 3.0.3 specification: **[openapi.yaml](openapi.yaml)**
+
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/v1/health` | Health check |
