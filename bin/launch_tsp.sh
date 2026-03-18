@@ -3,17 +3,66 @@
 # launch_tsp.sh - Start the TSDuck HLS-to-TS pipeline
 #
 # Reads pipeline.toml and constructs the tsp command line.
-# Designed to be called by systemd or run standalone.
+# CLI arguments override config file values.
+# Designed to be called by systemd, the API server, or run standalone.
+#
+# Usage:
+#   ./launch_tsp.sh [config_file] [options]
+#
+# Options:
+#   --source-url URL        HLS manifest URL
+#   --output-mode MODE      Output: file, udp, srt
+#   --output-file PATH      Output file path (when mode=file)
+#   --scte35-pid PID        SCTE-35 PID number
+#   --output-bitrate BPS    Output bitrate
+#   --udp-address ADDR      UDP multicast address
+#   --udp-port PORT         UDP port
+#   --inject-dir DIR        Splice XML directory
 #
 # Tested against TSDuck v3.42
 #
 
 set -uo pipefail
 
-CONFIG="${1:-/opt/hls-scte35/config/pipeline.toml}"
+# --- Defaults ---
+CONFIG="/opt/hls-scte35/config/pipeline.toml"
 LOG_DIR="/opt/hls-scte35/logs"
-INJECT_DIR="/opt/hls-scte35/inject"
-INJECT_FILE="${INJECT_DIR}/splice.xml"
+
+# CLI override variables (empty = use config/default)
+CLI_SOURCE_URL=""
+CLI_OUTPUT_MODE=""
+CLI_OUTPUT_FILE=""
+CLI_SCTE35_PID=""
+CLI_OUTPUT_BITRATE=""
+CLI_UDP_ADDR=""
+CLI_UDP_PORT=""
+CLI_INJECT_DIR=""
+
+# --- Parse arguments ---
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --source-url)      CLI_SOURCE_URL="$2"; shift 2 ;;
+        --output-mode)     CLI_OUTPUT_MODE="$2"; shift 2 ;;
+        --output-file)     CLI_OUTPUT_FILE="$2"; shift 2 ;;
+        --scte35-pid)      CLI_SCTE35_PID="$2"; shift 2 ;;
+        --output-bitrate)  CLI_OUTPUT_BITRATE="$2"; shift 2 ;;
+        --udp-address)     CLI_UDP_ADDR="$2"; shift 2 ;;
+        --udp-port)        CLI_UDP_PORT="$2"; shift 2 ;;
+        --inject-dir)      CLI_INJECT_DIR="$2"; shift 2 ;;
+        --help|-h)
+            sed -n '10,21p' "$0"
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            exit 1
+            ;;
+        *)
+            # Positional: config file path
+            CONFIG="$1"; shift
+            ;;
+    esac
+done
 
 # --- Parse config (lightweight TOML extraction) ---
 # Strips inline comments, unquotes values, trims whitespace
@@ -24,13 +73,14 @@ get_val() {
     echo "$result"
 }
 
-SOURCE_URL=$(get_val "url")
-SCTE35_PID=$(get_val "pid")
-OUTPUT_MODE=$(get_val "output_mode")
-OUTPUT_BITRATE=$(get_val "output_bitrate")
+# Read config, then apply CLI overrides
+SOURCE_URL="${CLI_SOURCE_URL:-$(get_val "url")}"
+SCTE35_PID="${CLI_SCTE35_PID:-$(get_val "pid")}"
+OUTPUT_MODE="${CLI_OUTPUT_MODE:-$(get_val "output_mode")}"
+OUTPUT_BITRATE="${CLI_OUTPUT_BITRATE:-$(get_val "output_bitrate")}"
 
-UDP_ADDR=$(get_val "udp_address")
-UDP_PORT=$(get_val "udp_port")
+UDP_ADDR="${CLI_UDP_ADDR:-$(get_val "udp_address")}"
+UDP_PORT="${CLI_UDP_PORT:-$(get_val "udp_port")}"
 UDP_LOCAL=$(get_val "udp_local")
 
 SRT_ADDR=$(get_val "srt_address")
@@ -38,16 +88,19 @@ SRT_PORT=$(get_val "srt_port")
 SRT_MODE=$(get_val "srt_mode")
 SRT_LATENCY=$(get_val "srt_latency")
 
-FILE_PATH=$(get_val "file_path")
+FILE_PATH="${CLI_OUTPUT_FILE:-$(get_val "file_path")}"
+INJECT_DIR="${CLI_INJECT_DIR:-$(get_val "inject_dir")}"
 
 # --- Defaults ---
 SCTE35_PID="${SCTE35_PID:-500}"
 OUTPUT_BITRATE="${OUTPUT_BITRATE:-6000000}"
 OUTPUT_MODE="${OUTPUT_MODE:-udp}"
+INJECT_DIR="${INJECT_DIR:-/opt/hls-scte35/inject}"
+INJECT_FILE="${INJECT_DIR}/splice.xml"
 
 # --- Validate required values ---
 if [ -z "$SOURCE_URL" ]; then
-    echo "ERROR: source url not set in $CONFIG"
+    echo "ERROR: source url not set. Use --source-url or set url in $CONFIG"
     exit 1
 fi
 

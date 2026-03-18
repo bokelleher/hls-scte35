@@ -50,25 +50,121 @@ PTS calibration runs automatically to correct for timestamp rebasing during tran
 ## Quick Start
 
 ```bash
-# Clone and install Python deps
-git clone https://github.com/<you>/hls-scte35.git
+# Clone and install
+git clone https://github.com/bokelleher/hls-scte35.git
 cd hls-scte35
+sudo ./install.sh
+
+# Or manually
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+```
 
-# Edit config
+### Option 1: Config file
+
+```bash
 cp config/pipeline.toml config/pipeline.local.toml
-# Set source.url, output mode, etc.
+vi config/pipeline.local.toml   # set source.url, output mode, etc.
 
-# Start the pipeline (two terminals)
 ./bin/launch_tsp.sh config/pipeline.local.toml
 python3 ./bin/manifest_monitor.py config/pipeline.local.toml
 ```
 
+### Option 2: CLI arguments
+
+```bash
+# All settings can be passed as CLI flags (override config file values)
+./bin/launch_tsp.sh --source-url http://example.com/live/index.m3u8 \
+    --output-mode file --output-file /tmp/output.ts
+
+python3 ./bin/manifest_monitor.py --source-url http://example.com/live/index.m3u8 \
+    --scte35-pid 500 --mode auto_detect --log-level DEBUG
+```
+
+### Option 3: REST API
+
+```bash
+# Start the API server
+python3 ./bin/api_server.py --port 8080
+
+# Start a pipeline via HTTP
+curl -X POST http://localhost:8080/api/v1/pipeline \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_url": "http://example.com/live/index.m3u8",
+    "output_mode": "file",
+    "output_file": "/tmp/output.ts"
+  }'
+
+# Check status
+curl http://localhost:8080/api/v1/pipeline/status
+
+# Stop the pipeline
+curl -X DELETE http://localhost:8080/api/v1/pipeline
+```
+
+## REST API Reference
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/v1/health` | Health check |
+| `POST` | `/api/v1/pipeline` | Start a pipeline |
+| `DELETE` | `/api/v1/pipeline` | Stop the running pipeline |
+| `GET` | `/api/v1/pipeline/status` | Get pipeline status |
+
+### POST /api/v1/pipeline
+
+Request body (JSON):
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `source_url` | string | *required* | HLS manifest URL |
+| `output_mode` | string | `"file"` | `file`, `udp`, or `srt` |
+| `output_file` | string | `output/live.ts` | Output path (file mode) |
+| `scte35_pid` | int | `500` | SCTE-35 PID |
+| `output_bitrate` | int | `40000000` | Output bitrate (bps) |
+| `mode` | string | `"auto_detect"` | `auto_detect`, `manifest_only`, `inband_only` |
+| `poll_interval` | float | `6.0` | Manifest poll interval (seconds) |
+| `udp_address` | string | | Multicast address (udp mode) |
+| `udp_port` | int | | Multicast port (udp mode) |
+| `log_level` | string | `"INFO"` | `DEBUG`, `INFO`, `WARN`, `ERROR` |
+
+## CLI Reference
+
+### launch_tsp.sh
+
+```
+./bin/launch_tsp.sh [config_file] [options]
+
+Options:
+  --source-url URL        HLS manifest URL
+  --output-mode MODE      Output: file, udp, srt
+  --output-file PATH      Output file path (when mode=file)
+  --scte35-pid PID        SCTE-35 PID number
+  --output-bitrate BPS    Output bitrate
+  --udp-address ADDR      UDP multicast address
+  --udp-port PORT         UDP port
+  --inject-dir DIR        Splice XML directory
+```
+
+### manifest_monitor.py
+
+```
+python3 ./bin/manifest_monitor.py [config_file] [options]
+
+Options:
+  --source-url URL        HLS manifest URL
+  --poll-interval SEC     Poll interval in seconds
+  --scte35-pid PID        SCTE-35 PID number
+  --mode MODE             auto_detect, manifest_only, inband_only
+  --inject-dir DIR        Splice XML output directory
+  --log-level LEVEL       DEBUG, INFO, WARN, ERROR
+```
+
 ## Configuration
 
-All settings are in `config/pipeline.toml`:
+All settings are in `config/pipeline.toml`. CLI arguments and API parameters override config file values.
 
 ```toml
 [source]

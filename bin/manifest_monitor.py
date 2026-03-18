@@ -27,6 +27,7 @@ TSDuck v3.42 XML schema (from tsduck.tables.model.xml):
   </splice_information_table>
 """
 
+import argparse
 import base64
 import hashlib
 import io
@@ -619,9 +620,63 @@ class ManifestMonitor:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="HLS Manifest Monitor for SCTE-35 Signal Detection"
+    )
+    parser.add_argument(
+        "config", nargs="?", default=None,
+        help="Path to pipeline.toml config file",
+    )
+    parser.add_argument(
+        "--source-url", dest="source_url",
+        help="HLS manifest URL (overrides config)",
+    )
+    parser.add_argument(
+        "--poll-interval", dest="poll_interval", type=float,
+        help="Poll interval in seconds (overrides config)",
+    )
+    parser.add_argument(
+        "--scte35-pid", dest="scte35_pid", type=int,
+        help="SCTE-35 PID (overrides config)",
+    )
+    parser.add_argument(
+        "--mode", choices=["auto_detect", "manifest_only", "inband_only"],
+        help="Detection mode (overrides config)",
+    )
+    parser.add_argument(
+        "--inject-dir", dest="inject_dir",
+        help="Directory for splice XML output (overrides config)",
+    )
+    parser.add_argument(
+        "--log-level", dest="log_level",
+        choices=["DEBUG", "INFO", "WARN", "ERROR"],
+        help="Log level (overrides config)",
+    )
+    return parser.parse_args(argv)
+
+
+def apply_cli_overrides(config: dict, args) -> dict:
+    """Apply CLI argument overrides to the loaded config."""
+    if args.source_url:
+        config.setdefault("source", {})["url"] = args.source_url
+    if args.poll_interval is not None:
+        config.setdefault("source", {})["poll_interval"] = args.poll_interval
+    if args.scte35_pid is not None:
+        config.setdefault("scte35", {})["pid"] = args.scte35_pid
+    if args.mode:
+        config.setdefault("scte35", {})["mode"] = args.mode
+    if args.inject_dir:
+        config.setdefault("tsduck", {})["inject_dir"] = args.inject_dir
+    if args.log_level:
+        config.setdefault("logging", {})["level"] = args.log_level
+    return config
+
+
 def main():
-    config_path = sys.argv[1] if len(sys.argv) > 1 else None
-    config = load_config(config_path)
+    args = parse_args()
+    config = load_config(args.config)
+    config = apply_cli_overrides(config, args)
     monitor = ManifestMonitor(config)
     monitor.run()
 

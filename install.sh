@@ -255,12 +255,43 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
 
+    log "Installing systemd unit: hls-scte35-api.service"
+    cat > /etc/systemd/system/hls-scte35-api.service <<EOF
+[Unit]
+Description=HLS SCTE-35 REST API Server
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=hls-scte35
+Group=hls-scte35
+ExecStart=${INSTALL_DIR}/venv/bin/python3 ${INSTALL_DIR}/bin/api_server.py --config ${INSTALL_DIR}/config/pipeline.toml
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hls-scte35-api
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=${INSTALL_DIR}/logs ${INSTALL_DIR}/output ${INSTALL_DIR}/inject
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
     log "Installing systemd target: hls-scte35.target"
     cat > /etc/systemd/system/hls-scte35.target <<EOF
 [Unit]
 Description=HLS SCTE-35 Pipeline (all components)
-Wants=hls-scte35-tsp.service hls-scte35-monitor.service
-After=hls-scte35-tsp.service hls-scte35-monitor.service
+Wants=hls-scte35-tsp.service hls-scte35-monitor.service hls-scte35-api.service
+After=hls-scte35-tsp.service hls-scte35-monitor.service hls-scte35-api.service
 
 [Install]
 WantedBy=multi-user.target
@@ -272,14 +303,18 @@ EOF
     log "Systemd services installed."
     echo ""
     echo "  Manage the full pipeline:"
-    echo "    sudo systemctl start hls-scte35.target    # start both services"
-    echo "    sudo systemctl stop hls-scte35.target     # stop both"
+    echo "    sudo systemctl start hls-scte35.target    # start all services"
+    echo "    sudo systemctl stop hls-scte35.target     # stop all"
     echo "    sudo systemctl status hls-scte35-tsp      # TSDuck status"
     echo "    sudo systemctl status hls-scte35-monitor   # monitor status"
+    echo "    sudo systemctl status hls-scte35-api       # API server status"
     echo ""
     echo "  View logs:"
     echo "    journalctl -u hls-scte35-tsp -f"
     echo "    journalctl -u hls-scte35-monitor -f"
+    echo "    journalctl -u hls-scte35-api -f"
+    echo ""
+    echo "  API server:  http://localhost:8080/api/v1/pipeline"
     echo ""
     echo "  NOTE: Edit ${INSTALL_DIR}/config/pipeline.toml before starting."
 }
