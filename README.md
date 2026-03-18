@@ -7,31 +7,26 @@ Converts live HLS streams (TS or fMP4 segments) to MPEG Transport Stream with pr
 ## Architecture
 
 ```
-HLS Source          manifest_monitor.py       launch_tsp.sh
-                                              (+ ffmpeg for DRM/fMP4)
-+--------------+   +---------------------+   +-------------------------+
-| master.m3u8  |-->| Poll manifest       |   |                         |
-| media.m3u8   |-->| Detect CUE-OUT/IN   |   | [no DRM]  tsp -I hls   |
-|              |   | Detect DATERANGE    |   | [DRM/fMP4]              |
-| segments     |   | Detect EXT-X-KEY    |   |   ffmpeg -decryption_key|
-| (.ts/.m4s)   |   | PTS calibration     |   |   | tsp -I file        |
-|              |   |                     |   |                         |
-|              |   | Write splice.xml   -|-->| -P continuity           |
-|              |   | Write splice.bin   -|-->| -P pmt (SCTE-35 0x86)  |
-+--------------+   +---------------------+   | -P inject xml (PID 500)|
-                     |               |        | -P inject bin (PID 500)|
-              +------+       +-------+        | -P tables (log)        |
-              |              |                | -P regulate            |
-     +--------+--+   +------+------+          | -O file/udp/srt        |
-     | DRM key   |   | Prometheus  |          +-------------------------+
-     | provider  |   | metrics     |
-     +-----------+   +-------------+          +-------------------------+
-                                              | api_server.py           |
-                                              |  POST/GET/DELETE        |
-                                              |  /api/v1/pipelines      |
-                                              |  /api/v1/metrics        |
-                                              |  Process supervisor     |
-                                              +-------------------------+
+                  manifest_monitor.py              launch_tsp.sh
+                 +--------------------+           +------------------------+
+  HLS Source     | Poll manifest      |           |                        |
+  +----------+   | Detect CUE-OUT/IN  |           | tsp -I hls     (TS)   |
+  | .m3u8    |-->| Detect DATERANGE   |           | ffmpeg | tsp   (fMP4) |
+  | .ts/.m4s |   | Detect EXT-X-KEY   |           | ffmpeg | tsp   (DRM)  |
+  +----------+   | PTS calibration    |           |                        |
+                 |                    | splice.xml| -P continuity          |
+                 | drm_key_provider   |---------->| -P pmt (SCTE-35 0x86) |
+                 |                    | splice.bin| -P inject xml (PID500) |
+                 | prometheus_metrics |---------->| -P inject bin (PID500) |
+                 +--------------------+           | -P tables (log)        |
+                                                  | -P regulate            |
+                 +--------------------+           | -O file / udp / srt    |
+                 | api_server.py      |           +------------------------+
+                 |                    |
+                 | /api/v1/pipelines  |  Manages both monitor + tsp
+                 | /api/v1/metrics    |  Process supervisor
+                 | API key auth       |  Multi-pipeline registry
+                 +--------------------+
 ```
 
 ### Signal Detection
