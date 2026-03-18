@@ -1,0 +1,74 @@
+graph LR
+    subgraph Source["HLS Source"]
+        M3U8[".m3u8 manifest"]
+        SEG[".ts / .m4s segments"]
+    end
+
+    subgraph Monitor["manifest_monitor.py"]
+        POLL["Poll manifest"]
+        CUE["Detect CUE-OUT/IN"]
+        DR["Detect DATERANGE"]
+        KEY["Detect EXT-X-KEY"]
+        CAL["PTS calibration"]
+        DRM["drm_key_provider"]
+        PROM["prometheus_metrics"]
+    end
+
+    subgraph TSP["launch_tsp.sh"]
+        direction TB
+        INPUT_TS["tsp -I hls (TS)"]
+        INPUT_FFMPEG["ffmpeg | tsp (fMP4/DRM)"]
+        CONT["-P continuity"]
+        PMT["-P pmt (SCTE-35 0x86)"]
+        INJ_XML["-P inject xml (PID 500)"]
+        INJ_BIN["-P inject bin (PID 500)"]
+        TABLES["-P tables (log)"]
+        REG["-P regulate"]
+        OUT["-O file / udp / srt"]
+    end
+
+    subgraph API["api_server.py"]
+        PIPELINES["/api/v1/pipelines"]
+        METRICS["/api/v1/metrics"]
+        AUTH["API key auth"]
+        SUPER["Process supervisor"]
+        REGISTRY["Multi-pipeline registry"]
+    end
+
+    M3U8 --> POLL
+    SEG --> INPUT_TS
+    SEG --> INPUT_FFMPEG
+
+    POLL --> CUE
+    POLL --> DR
+    POLL --> KEY
+    KEY --> DRM
+
+    CUE -->|splice.xml| INJ_XML
+    DR -->|splice.bin| INJ_BIN
+
+    INPUT_TS --> CONT
+    INPUT_FFMPEG --> CONT
+    DRM -->|decryption key| INPUT_FFMPEG
+    CAL -->|PTS offset| INJ_XML
+
+    CONT --> PMT
+    PMT --> INJ_XML
+    INJ_XML --> INJ_BIN
+    INJ_BIN --> TABLES
+    TABLES --> REG
+    REG --> OUT
+
+    API -->|start/stop| Monitor
+    API -->|start/stop| TSP
+    PROM --> METRICS
+
+    classDef source fill:#2d5a3d,stroke:#4a9,color:#fff
+    classDef monitor fill:#2d3a5a,stroke:#49a,color:#fff
+    classDef tsp fill:#5a2d3a,stroke:#a49,color:#fff
+    classDef api fill:#5a4a2d,stroke:#a94,color:#fff
+
+    class M3U8,SEG source
+    class POLL,CUE,DR,KEY,CAL,DRM,PROM monitor
+    class INPUT_TS,INPUT_FFMPEG,CONT,PMT,INJ_XML,INJ_BIN,TABLES,REG,OUT tsp
+    class PIPELINES,METRICS,AUTH,SUPER,REGISTRY api
