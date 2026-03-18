@@ -1,0 +1,69 @@
+# HLS-to-TS SCTE-35 Pipeline Configuration
+# Target: vm100 (192.168.1.42)
+
+[source]
+# HLS source URL - master or media playlist
+url = "http://127.0.0.1:8899/index.m3u8"
+
+# Poll interval in seconds (match segment duration)
+poll_interval = 6.0
+
+# Optional: HTTP headers for auth
+# headers = { Authorization = "Bearer <token>" }
+
+[scte35]
+# SCTE-35 output PID in the transport stream
+pid = 500          # 0x01F4
+
+# Default splice duration (seconds) if CUE-OUT has no duration
+default_duration = 30.0
+
+# Pre-roll: inject splice_insert this many seconds before the splice point
+# Allows downstream decoders to prepare
+preroll_ms = 4000
+
+# Unique program splice event ID base (incremented per event)
+event_id_base = 1
+
+# auto_detect: try in-band first, fall back to manifest tags
+# manifest_only: only parse EXT-X-CUE-OUT/IN and DATERANGE
+# inband_only: rely solely on in-band SCTE-35 PID passthrough
+mode = "auto_detect"
+
+# PTS calibration: measure actual output PTS to correct for ffmpeg transmux offset
+calibration_enabled = true
+calibration_delay_s = 10.0    # seconds to wait before first probe (let pipeline produce output)
+calibration_retries = 3       # unused currently, reserved for future retry logic
+
+[tsduck]
+# Output mode: "udp", "srt", "file"
+output_mode = "file"
+
+# UDP multicast output
+udp_address = "239.1.1.1"
+udp_port = 5000
+udp_local = "192.168.1.42"
+
+# SRT output (alternative)
+# srt_address = "192.168.1.50"
+# srt_port = 9000
+# srt_mode = "caller"    # caller or listener
+# srt_latency = 200
+
+# File output (alternative)
+file_path = "/opt/hls-scte35/output/live.ts"
+
+# Target output bitrate for regulate plugin (bps)
+output_bitrate = 40000000
+
+# Inject directory for splice XML table files
+inject_dir = "/opt/hls-scte35/inject"
+
+# Continuity counter fix
+fix_continuity = true
+
+[logging]
+log_dir = "/opt/hls-scte35/logs"
+splice_log = "splice.log"
+tsp_log = "tsp.log"
+level = "INFO"    # DEBUG, INFO, WARN, ERROR
