@@ -111,11 +111,32 @@ key_server_headers = { Authorization = "Bearer eyJhbG..." }
 
 **What you can't use this for**: Widevine and FairPlay keys are not raw AES keys — they require a license exchange protocol. Widevine support (via a license proxy) is planned for a future release. FairPlay requires Apple's proprietary SDK and is not feasible on Linux.
 
+## Supported Environments
+
+| Distro | Versions | Package Manager | Installer Tested |
+|---|---|---|---|
+| Ubuntu | 22.04, 24.04 | apt | Yes |
+| Debian | 12 | apt | Yes |
+| Rocky Linux | 8, 9 | dnf | Yes |
+| AlmaLinux | 8, 9 | dnf | Yes |
+| RHEL | 8, 9 | dnf | Yes |
+| Fedora | 39+ | dnf | Yes |
+
+**Architecture**: x86_64 and aarch64 (ARM64). TSDuck packages are available for both.
+
+The installer (`install.sh`) auto-detects the OS and uses the appropriate package manager. On RHEL-family systems it enables EPEL and RPM Fusion for ffmpeg.
+
+### Container / Cloud
+
+The pipeline runs in Docker or any OCI container based on the supported distros above. No special privileges are required beyond network access to the HLS source. For Kubernetes, each pipeline instance is stateless — the only persistent state is the inject directory (ephemeral) and logs.
+
+Not tested on Alpine (musl libc) — TSDuck does not publish Alpine packages.
+
 ## Prerequisites
 
 - **TSDuck** v3.42+ ([tsduck.io](https://tsduck.io))
 - **Python** 3.11+
-- **ffmpeg** / **ffprobe** (required for fMP4 input)
+- **ffmpeg** / **ffprobe** (required for fMP4 input and DRM decryption)
 
 ## Quick Start
 
