@@ -162,7 +162,7 @@
             },
             {
                 "id": 5,
-                "title": "SCTE-35 Events Detected",
+                "title": "SCTE-35 Events Detected (total)",
                 "type": "timeseries",
                 "gridPos": {
                     "h": 8,
@@ -183,19 +183,21 @@
                 },
                 "fieldConfig": {
                     "defaults": {
-                        "unit": "short",
                         "custom": {
-                            "fillOpacity": 20,
+                            "fillOpacity": 30,
                             "stacking": {
                                 "mode": "none"
-                            }
+                            },
+                            "drawStyle": "steppedLine",
+                            "pointSize": 8,
+                            "showPoints": "always"
                         }
                     }
                 }
             },
             {
                 "id": 6,
-                "title": "SCTE-35 Events Injected",
+                "title": "SCTE-35 Events Injected (total)",
                 "type": "timeseries",
                 "gridPos": {
                     "h": 8,
@@ -216,12 +218,14 @@
                 },
                 "fieldConfig": {
                     "defaults": {
-                        "unit": "short",
                         "custom": {
-                            "fillOpacity": 20,
+                            "fillOpacity": 30,
                             "stacking": {
                                 "mode": "none"
-                            }
+                            },
+                            "drawStyle": "steppedLine",
+                            "pointSize": 8,
+                            "showPoints": "always"
                         }
                     }
                 }
