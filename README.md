@@ -7,18 +7,18 @@ Converts live HLS streams (TS or fMP4 segments) to MPEG Transport Stream with pr
 ## Architecture
 
 ```
-HLS Source                manifest_monitor.py              launch_tsp.sh
-┌─────────────┐         ┌───────────────────┐         ┌──────────────────────┐
-│ master.m3u8 │────────>│ Poll manifest     │         │                      │
-│ media.m3u8  │────────>│ Detect CUE-OUT/IN │         │ tsp -I hls (TS)      │
-│             │         │ Detect DATERANGE   │         │  or ffmpeg | tsp     │
-│ segments    │         │ PTS calibration   │         │   (fMP4)             │
-│ (.ts/.m4s)  │         │                   │         │ -P continuity        │
-│             │         │ Write splice.xml  │────────>│ -P pmt (SCTE-35 reg) │
-└─────────────┘         └───────────────────┘         │ -P inject (PID 500)  │
-                                                      │ -P regulate          │
-                                                      │ -O file/udp/srt      │
-                                                      └──────────────────────┘
+ HLS Source             manifest_monitor.py            launch_tsp.sh
+┌───────────────┐     ┌─────────────────────┐     ┌────────────────────────┐
+│ master.m3u8   │────>│ Poll manifest       │     │                        │
+│ media.m3u8    │────>│ Detect CUE-OUT/IN   │     │ tsp -I hls (TS)       │
+│               │     │ Detect DATERANGE    │     │   or ffmpeg | tsp     │
+│ segments      │     │ PTS calibration     │     │     (fMP4)            │
+│ (.ts/.m4s)    │     │                     │     │ -P continuity         │
+│               │     │ Write splice.xml    │────>│ -P pmt (SCTE-35 reg)  │
+└───────────────┘     └─────────────────────┘     │ -P inject (PID 500)   │
+                                                  │ -P regulate           │
+                                                  │ -O file/udp/srt       │
+                                                  └────────────────────────┘
 ```
 
 ### Signal Detection
