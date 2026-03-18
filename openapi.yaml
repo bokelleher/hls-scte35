@@ -1,0 +1,508 @@
+openapi: 3.0.3
+info:
+  title: hls-scte35 Pipeline API
+  description: |
+    REST API for managing HLS-to-MPEG-TS pipelines with SCTE-35 ad marker injection.
+
+    Supports multiple concurrent pipelines, each with isolated inject directories,
+    log files, and output paths. Pipelines are supervised and automatically restarted
+    on failure.
+
+    ## Authentication
+    Set the `API_KEY` environment variable on the server to enable API key authentication.
+    When enabled, mutating endpoints require an `X-API-Key` header. Read-only endpoints
+    (health, list, status) remain open.
+
+    ## SSRF Protection
+    Source URLs are restricted to `http` and `https` schemes. Localhost and cloud metadata
+    IPs are blocked by default. Set `ALLOW_LOCALHOST_SOURCES=1` to override for development.
+  version: 0.7.0
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  contact:
+    name: bokelleher
+    url: https://github.com/bokelleher/hls-scte35
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+security:
+  - ApiKeyAuth: []
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        Required for mutating endpoints when `API_KEY` env var is set on the server.
+        Read-only endpoints do not require authentication.
+
+  schemas:
+    PipelineCreateRequest:
+      type: object
+      required:
+        - source_url
+      properties:
+        source_url:
+          type: string
+          format: uri
+          description: HLS manifest URL (http/https only)
+          example: http://origin.example.com/live/index.m3u8
+        output_mode:
+          type: string
+          enum: [file, udp, srt]
+          default: file
+          description: Output transport
+        output_file:
+          type: string
+          description: Output file path (file mode). Auto-generated if omitted. Must be under /opt/hls-scte35/output, /tmp, or /var/tmp.
+          example: /opt/hls-scte35/output/live.ts
+        scte35_pid:
+          type: integer
+          default: 500
+          description: SCTE-35 PID in the output transport stream
+        output_bitrate:
+          type: integer
+          default: 40000000
+          description: Output bitrate in bits per second
+        mode:
+          type: string
+          enum: [auto_detect, manifest_only, inband_only]
+          default: auto_detect
+          description: SCTE-35 signal detection mode
+        poll_interval:
+          type: number
+          format: float
+          default: 6.0
+          description: Manifest poll interval in seconds. Auto-adapts for low-latency HLS.
+        udp_address:
+          type: string
+          format: ipv4
+          description: Multicast address (udp mode)
+          example: "239.1.1.1"
+        udp_port:
+          type: integer
+          description: Multicast port (udp mode)
+          example: 5000
+        srt_address:
+          type: string
+          description: SRT destination address (srt mode)
+          example: "192.168.1.50"
+        srt_port:
+          type: integer
+          description: SRT destination port (srt mode)
+          example: 9000
+        srt_mode:
+          type: string
+          enum: [caller, listener]
+          default: caller
+          description: SRT connection mode
+        srt_latency:
+          type: integer
+          default: 200
+          description: SRT latency in milliseconds
+        log_level:
+          type: string
+          enum: [DEBUG, INFO, WARN, ERROR]
+          default: INFO
+        drm_mode:
+          type: string
+          enum: [none, auto, aes128]
+          default: none
+          description: |
+            DRM decryption mode.
+            - `none`: no decryption
+            - `auto`: ffmpeg auto-fetches key from EXT-X-KEY URI
+            - `aes128`: decrypt with pre-shared key
+        drm_key:
+          type: string
+          pattern: "^[0-9a-fA-F]{32}$"
+          description: Pre-shared AES-128 key (32 hex digits). Required for aes128 mode. Redacted in responses.
+          example: "00112233445566778899aabbccddeeff"
+        drm_iv:
+          type: string
+          pattern: "^[0-9a-fA-F]{32}$"
+          description: Pre-shared IV (32 hex digits). Optional; derived from media sequence if absent.
+
+    PipelineConfig:
+      type: object
+      properties:
+        source_url:
+          type: string
+        output_mode:
+          type: string
+        output_file:
+          type: string
+          nullable: true
+        scte35_pid:
+          type: integer
+        mode:
+          type: string
+        drm_mode:
+          type: string
+        drm_key:
+          type: string
+          nullable: true
+          description: Redacted key (e.g., "****eeff")
+
+    ProcessInfo:
+      type: object
+      properties:
+        pid:
+          type: integer
+          nullable: true
+          description: OS process ID
+        running:
+          type: boolean
+        returncode:
+          type: integer
+          nullable: true
+          description: Exit code if process has stopped
+
+    PipelineStatus:
+      type: object
+      properties:
+        id:
+          type: string
+          description: 8-character hex pipeline ID
+          example: a1b2c3d4
+        state:
+          type: string
+          enum: [running, degraded, stopped]
+        config:
+          $ref: "#/components/schemas/PipelineConfig"
+        tsp:
+          $ref: "#/components/schemas/ProcessInfo"
+        monitor:
+          $ref: "#/components/schemas/ProcessInfo"
+        inject_dir:
+          type: string
+        log_dir:
+          type: string
+        uptime_seconds:
+          type: number
+          format: float
+
+    PipelineStopResult:
+      type: object
+      properties:
+        id:
+          type: string
+        state:
+          type: string
+          example: stopped
+        stopped:
+          type: array
+          items:
+            type: string
+          description: List of processes that were stopped
+          example: ["monitor", "tsp"]
+
+    MetricsResponse:
+      type: object
+      properties:
+        pipelines_created:
+          type: integer
+        pipelines_stopped:
+          type: integer
+        pipelines_failed:
+          type: integer
+        restarts_total:
+          type: integer
+        uptime_seconds:
+          type: number
+          format: float
+        active_pipelines:
+          type: integer
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+paths:
+  /api/v1/health:
+    get:
+      summary: Health check
+      operationId: health
+      tags: [System]
+      security: []
+      responses:
+        "200":
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/v1/metrics:
+    get:
+      summary: Get pipeline metrics
+      operationId: getMetrics
+      tags: [System]
+      responses:
+        "200":
+          description: Current metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricsResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/pipelines:
+    post:
+      summary: Create and start a new pipeline
+      operationId: createPipeline
+      tags: [Pipelines]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PipelineCreateRequest"
+            examples:
+              file_output:
+                summary: HLS to file
+                value:
+                  source_url: http://origin.example.com/live/index.m3u8
+                  output_mode: file
+              udp_output:
+                summary: HLS to UDP multicast
+                value:
+                  source_url: http://origin.example.com/live/index.m3u8
+                  output_mode: udp
+                  udp_address: "239.1.1.1"
+                  udp_port: 5000
+                  output_bitrate: 20000000
+              srt_output:
+                summary: HLS to SRT
+                value:
+                  source_url: http://origin.example.com/live/index.m3u8
+                  output_mode: srt
+                  srt_address: "192.168.1.50"
+                  srt_port: 9000
+                  srt_mode: caller
+                  srt_latency: 200
+              drm_aes128:
+                summary: DRM-protected HLS with pre-shared key
+                value:
+                  source_url: http://origin.example.com/drm/index.m3u8
+                  output_mode: file
+                  drm_mode: aes128
+                  drm_key: "00112233445566778899aabbccddeeff"
+              drm_auto:
+                summary: DRM-protected HLS with auto key fetch
+                value:
+                  source_url: http://origin.example.com/drm/index.m3u8
+                  output_mode: file
+                  drm_mode: auto
+      responses:
+        "201":
+          description: Pipeline created and started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipelineStatus"
+        "400":
+          description: Validation error (missing source_url, invalid URL, bad key format, etc.)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Failed to start pipeline
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    get:
+      summary: List all pipelines
+      operationId: listPipelines
+      tags: [Pipelines]
+      security: []
+      responses:
+        "200":
+          description: List of all pipelines
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pipelines:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PipelineStatus"
+
+    delete:
+      summary: Stop and remove all pipelines
+      operationId: deleteAllPipelines
+      tags: [Pipelines]
+      responses:
+        "200":
+          description: All pipelines stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stopped:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PipelineStopResult"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/pipelines/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: 8-character hex pipeline ID
+        example: a1b2c3d4
+
+    get:
+      summary: Get pipeline status
+      operationId: getPipeline
+      tags: [Pipelines]
+      security: []
+      responses:
+        "200":
+          description: Pipeline status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipelineStatus"
+        "404":
+          description: Pipeline not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    delete:
+      summary: Stop and remove a pipeline
+      operationId: deletePipeline
+      tags: [Pipelines]
+      responses:
+        "200":
+          description: Pipeline stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipelineStopResult"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Pipeline not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # --- Legacy endpoints (backwards compatibility) ---
+
+  /api/v1/pipeline:
+    post:
+      summary: Start a pipeline (legacy)
+      operationId: legacyStart
+      tags: [Legacy]
+      description: |
+        Backwards-compatible endpoint. Stops any existing pipelines first,
+        then starts a new one. Prefer `/api/v1/pipelines` for new integrations.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PipelineCreateRequest"
+      responses:
+        "201":
+          description: Pipeline started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipelineStatus"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    delete:
+      summary: Stop all pipelines (legacy)
+      operationId: legacyStop
+      tags: [Legacy]
+      responses:
+        "200":
+          description: Pipeline(s) stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipelineStopResult"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/pipeline/status:
+    get:
+      summary: Get pipeline status (legacy)
+      operationId: legacyStatus
+      tags: [Legacy]
+      security: []
+      description: "Returns the status of the first pipeline, or {\"state\": \"stopped\"} if none are running."
+      responses:
+        "200":
+          description: Pipeline status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipelineStatus"
+
+tags:
+  - name: System
+    description: Health and metrics
+  - name: Pipelines
+    description: Multi-pipeline management
+  - name: Legacy
+    description: Backwards-compatible single-pipeline endpoints
