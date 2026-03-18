@@ -672,6 +672,16 @@ For a typical live HLS source with 6-second segments going through the ffmpeg pa
 
 For low-latency HLS (2s segments, partial segments), the monitor automatically adapts its poll interval and the ffmpeg `low_latency` mode reduces the overall budget significantly.
 
+## Monitoring
+
+The API server exposes Prometheus-native metrics at `GET /api/v1/metrics`. Key metrics include SCTE-35 events detected/injected (by type), manifest poll duration and errors, pipeline state, process restarts, PTS calibration status, and DRM key rotations.
+
+For full setup instructions including Prometheus config, Grafana dashboard panels, alert rules, and InfluxDB/Telegraf integration, see **[docs/monitoring.md](docs/monitoring.md)**.
+
+## API Specification
+
+The full OpenAPI 3.0.3 specification is available at **[openapi.yaml](openapi.yaml)**. Import it into Swagger UI, Redocly, or Postman to explore all endpoints, request/response schemas, and examples.
+
 ## Output
 
 The TSDuck pipeline produces a compliant MPEG-TS with:
