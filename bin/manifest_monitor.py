@@ -34,10 +34,12 @@ import io
 import logging
 import os
 import re
+import signal
 import struct
 import subprocess
 import sys
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -202,13 +204,20 @@ class ManifestMonitor:
 
         self.config = config
         self.event_id = self.event_id_base
-        self.seen_cues: set[str] = set()
+        # Rolling window for seen cues: OrderedDict with timestamps, pruned on each poll
+        self._seen_cues: OrderedDict[str, float] = OrderedDict()
+        self._seen_cues_ttl = 3600.0  # expire after 1 hour
+        # Dedup for raw binary sections by content hash
+        self._seen_raw_hashes: OrderedDict[str, float] = OrderedDict()
         self.session = requests.Session()
         self.session.headers.update(self.headers)
 
         # Pending splice commands to write as a batch
         self.pending_commands: list[str] = []
         self.pending_raw_sections: list[bytes] = []
+
+        # Graceful shutdown
+        self._running = True
 
         # Track PTS baseline from PROGRAM-DATE-TIME
         self.pdt_base: datetime | None = None
@@ -301,6 +310,34 @@ class ManifestMonitor:
         raw = f"{tag_type}:{position}"
         return hashlib.md5(raw.encode()).hexdigest()[:12]
 
+    def _is_seen(self, key: str) -> bool:
+        """Check if a cue key has been seen within the TTL window."""
+        if key in self._seen_cues:
+            return True
+        return False
+
+    def _mark_seen(self, key: str):
+        """Mark a cue key as seen with current timestamp."""
+        self._seen_cues[key] = time.monotonic()
+
+    def _prune_seen(self):
+        """Remove expired entries from seen_cues and seen_raw_hashes."""
+        now = time.monotonic()
+        cutoff = now - self._seen_cues_ttl
+        # Prune from oldest (front of OrderedDict)
+        while self._seen_cues:
+            oldest_key, oldest_time = next(iter(self._seen_cues.items()))
+            if oldest_time < cutoff:
+                del self._seen_cues[oldest_key]
+            else:
+                break
+        while self._seen_raw_hashes:
+            oldest_key, oldest_time = next(iter(self._seen_raw_hashes.items()))
+            if oldest_time < cutoff:
+                del self._seen_raw_hashes[oldest_key]
+            else:
+                break
+
     def _queue_command(self, xml_fragment: str, label: str):
         """Queue a splice command XML fragment. Written to file after full poll."""
         self.pending_commands.append(xml_fragment)
@@ -308,6 +345,13 @@ class ManifestMonitor:
 
     def _queue_raw_section(self, raw_bytes: bytes, label: str):
         """Queue a raw SCTE-35 binary section for direct injection."""
+        # Deduplicate by content hash within TTL window
+        content_hash = hashlib.md5(raw_bytes).hexdigest()[:16]
+        if content_hash in self._seen_raw_hashes:
+            self.logger.debug(f"Skipping duplicate raw section: {label}")
+            return
+        self._seen_raw_hashes[content_hash] = time.monotonic()
+
         self.pending_raw_sections.append(raw_bytes)
         self.logger.info(f"Queued raw SCTE-35 section: {label}")
 
@@ -458,9 +502,9 @@ class ManifestMonitor:
 
     def _process_cue_out(self, duration: float | None, media_sequence: int):
         key = self._cue_key("CUE-OUT", media_sequence)
-        if key in self.seen_cues:
+        if self._is_seen(key):
             return
-        self.seen_cues.add(key)
+        self._mark_seen(key)
 
         dur = duration or self.default_duration
         event_id = self._next_event_id()
@@ -482,9 +526,9 @@ class ManifestMonitor:
 
     def _process_cue_in(self, media_sequence: int):
         key = self._cue_key("CUE-IN", media_sequence)
-        if key in self.seen_cues:
+        if self._is_seen(key):
             return
-        self.seen_cues.add(key)
+        self._mark_seen(key)
 
         event_id = self._next_event_id()
         self.logger.info(
@@ -503,9 +547,9 @@ class ManifestMonitor:
     def _process_daterange(self, daterange: dict):
         dr_id = daterange.get("id", "unknown")
         key = self._cue_key("DATERANGE", dr_id)
-        if key in self.seen_cues:
+        if self._is_seen(key):
             return
-        self.seen_cues.add(key)
+        self._mark_seen(key)
 
         scte35_cmd = daterange.get("scte35_cmd")
         scte35_out = daterange.get("scte35_out")
@@ -717,8 +761,40 @@ class ManifestMonitor:
         # Flush all queued commands to the inject file
         self._flush_commands()
 
+        # Adapt poll interval for low-latency HLS
+        self.poll_interval = self._adapt_poll_interval(playlist)
+
+    def _adapt_poll_interval(self, playlist) -> float:
+        """
+        Adapt poll interval based on target duration.
+        For low-latency HLS (target <= 2s), poll at half the target duration.
+        Otherwise use the configured poll interval.
+        """
+        target = getattr(playlist, "target_duration", None)
+        if target and target <= 2.0:
+            adapted = max(0.5, target / 2.0)
+            if adapted != self.poll_interval:
+                self.logger.info(
+                    f"Low-latency HLS detected (target={target}s), "
+                    f"adapting poll interval to {adapted}s"
+                )
+            return adapted
+        return self.poll_interval
+
+    def shutdown(self):
+        """Signal the monitor to stop gracefully."""
+        self._running = False
+        self.logger.info("Shutdown signal received")
+
     def run(self):
-        """Main polling loop."""
+        """Main polling loop with graceful shutdown support."""
+        # Register signal handlers
+        def _handle_signal(signum, frame):
+            self.shutdown()
+
+        signal.signal(signal.SIGTERM, _handle_signal)
+        signal.signal(signal.SIGINT, _handle_signal)
+
         self.logger.info(
             f"Starting manifest monitor: {self.source_url} "
             f"(mode={self.mode}, poll={self.poll_interval}s)"
@@ -731,13 +807,21 @@ class ManifestMonitor:
             )
 
         self._start_time = time.monotonic()
+        current_interval = self.poll_interval
 
-        while True:
+        while self._running:
             try:
                 self.poll_once()
+                # Prune expired entries from seen cues and raw hashes
+                self._prune_seen()
             except Exception as e:
                 self.logger.exception(f"Unhandled error in poll: {e}")
-            time.sleep(self.poll_interval)
+            # Sleep in small increments so we can respond to shutdown quickly
+            sleep_until = time.monotonic() + current_interval
+            while self._running and time.monotonic() < sleep_until:
+                time.sleep(min(0.5, sleep_until - time.monotonic()))
+
+        self.logger.info("Monitor stopped")
 
 
 # ---------------------------------------------------------------------------

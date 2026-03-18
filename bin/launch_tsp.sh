@@ -43,6 +43,10 @@ CLI_INJECT_DIR=""
 CLI_DRM_MODE=""
 CLI_DRM_KEY=""
 CLI_DRM_IV=""
+CLI_SRT_ADDR=""
+CLI_SRT_PORT=""
+CLI_SRT_MODE=""
+CLI_SRT_LATENCY=""
 
 # --- Parse arguments ---
 while [[ $# -gt 0 ]]; do
@@ -58,6 +62,10 @@ while [[ $# -gt 0 ]]; do
         --drm-mode)        CLI_DRM_MODE="$2"; shift 2 ;;
         --drm-key)         CLI_DRM_KEY="$2"; shift 2 ;;
         --drm-iv)          CLI_DRM_IV="$2"; shift 2 ;;
+        --srt-address)     CLI_SRT_ADDR="$2"; shift 2 ;;
+        --srt-port)        CLI_SRT_PORT="$2"; shift 2 ;;
+        --srt-mode)        CLI_SRT_MODE="$2"; shift 2 ;;
+        --srt-latency)     CLI_SRT_LATENCY="$2"; shift 2 ;;
         --help|-h)
             sed -n '10,24p' "$0"
             exit 0
@@ -73,42 +81,37 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# --- Parse config (lightweight TOML extraction) ---
-# Strips inline comments, unquotes values, trims whitespace
-get_val() {
-    local key="$1"
-    local result
-    result=$(grep "^${key}" "$CONFIG" 2>/dev/null | head -1 | sed 's/#.*//' | sed 's/.*= *"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' ')
-    echo "$result"
-}
+# --- Parse config via Python TOML helper (section-aware, no ambiguity) ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="${SCRIPT_DIR}/../venv/bin/python3"
+[ ! -x "$PYTHON" ] && PYTHON="python3"
 
-# Read config, then apply CLI overrides
-SOURCE_URL="${CLI_SOURCE_URL:-$(get_val "url")}"
-SCTE35_PID="${CLI_SCTE35_PID:-$(get_val "pid")}"
-OUTPUT_MODE="${CLI_OUTPUT_MODE:-$(get_val "output_mode")}"
-OUTPUT_BITRATE="${CLI_OUTPUT_BITRATE:-$(get_val "output_bitrate")}"
-
-UDP_ADDR="${CLI_UDP_ADDR:-$(get_val "udp_address")}"
-UDP_PORT="${CLI_UDP_PORT:-$(get_val "udp_port")}"
-UDP_LOCAL=$(get_val "udp_local")
-
-SRT_ADDR=$(get_val "srt_address")
-SRT_PORT=$(get_val "srt_port")
-SRT_MODE=$(get_val "srt_mode")
-SRT_LATENCY=$(get_val "srt_latency")
-
-FILE_PATH="${CLI_OUTPUT_FILE:-$(get_val "file_path")}"
-INJECT_DIR="${CLI_INJECT_DIR:-$(get_val "inject_dir")}"
-
-# DRM config: env var > CLI > config file
-DRM_MODE="${CLI_DRM_MODE:-$(get_val "mode")}"
-# Look for mode under [drm] section specifically
-if [ -z "$DRM_MODE" ] || [ "$DRM_MODE" = "auto_detect" ] || [ "$DRM_MODE" = "manifest_only" ] || [ "$DRM_MODE" = "inband_only" ]; then
-    # The get_val matched [scte35] mode, not [drm] mode. Parse [drm] section explicitly.
-    DRM_MODE="${CLI_DRM_MODE:-$(sed -n '/^\[drm\]/,/^\[/{ /^mode/p }' "$CONFIG" 2>/dev/null | head -1 | sed 's/#.*//' | sed 's/.*= *"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' ')}"
+if [ -f "$CONFIG" ]; then
+    eval "$("$PYTHON" "$SCRIPT_DIR/config_helper.py" "$CONFIG" 2>/dev/null)"
 fi
-DRM_KEY="${DRM_KEY:-${CLI_DRM_KEY:-$(sed -n '/^\[drm\]/,/^\[/{ /^key /p }' "$CONFIG" 2>/dev/null | head -1 | sed 's/#.*//' | sed 's/.*= *"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' ')}}"
-DRM_IV="${CLI_DRM_IV:-$(sed -n '/^\[drm\]/,/^\[/{ /^iv /p }' "$CONFIG" 2>/dev/null | head -1 | sed 's/#.*//' | sed 's/.*= *"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' ')}"
+
+# Apply CLI overrides (CLI > config)
+SOURCE_URL="${CLI_SOURCE_URL:-${CFG_SOURCE_URL:-}}"
+SCTE35_PID="${CLI_SCTE35_PID:-${CFG_SCTE35_PID:-}}"
+OUTPUT_MODE="${CLI_OUTPUT_MODE:-${CFG_OUTPUT_MODE:-}}"
+OUTPUT_BITRATE="${CLI_OUTPUT_BITRATE:-${CFG_OUTPUT_BITRATE:-}}"
+
+UDP_ADDR="${CLI_UDP_ADDR:-${CFG_UDP_ADDR:-}}"
+UDP_PORT="${CLI_UDP_PORT:-${CFG_UDP_PORT:-}}"
+UDP_LOCAL="${CFG_UDP_LOCAL:-}"
+
+SRT_ADDR="${CLI_SRT_ADDR:-${CFG_SRT_ADDR:-}}"
+SRT_PORT="${CLI_SRT_PORT:-${CFG_SRT_PORT:-}}"
+SRT_MODE="${CLI_SRT_MODE:-${CFG_SRT_MODE:-}}"
+SRT_LATENCY="${CLI_SRT_LATENCY:-${CFG_SRT_LATENCY:-}}"
+
+FILE_PATH="${CLI_OUTPUT_FILE:-${CFG_FILE_PATH:-}}"
+INJECT_DIR="${CLI_INJECT_DIR:-${CFG_INJECT_DIR:-}}"
+
+# DRM config: env var > CLI > config
+DRM_MODE="${CLI_DRM_MODE:-${CFG_DRM_MODE:-}}"
+DRM_KEY="${DRM_KEY:-${CLI_DRM_KEY:-${CFG_DRM_KEY:-}}}"
+DRM_IV="${CLI_DRM_IV:-${CFG_DRM_IV:-}}"
 
 # --- Defaults ---
 SCTE35_PID="${SCTE35_PID:-500}"

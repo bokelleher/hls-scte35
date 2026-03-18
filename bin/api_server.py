@@ -18,8 +18,10 @@ Endpoints:
 """
 
 import argparse
+import functools
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -27,6 +29,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 try:
     import tomllib
@@ -55,6 +58,97 @@ def load_config(path: str = None) -> dict:
     config_path = path or os.environ.get("PIPELINE_CONFIG", DEFAULT_CONFIG)
     with open(config_path, "rb") as f:
         return tomllib.load(f)
+
+
+# ---------------------------------------------------------------------------
+# Input Validation
+# ---------------------------------------------------------------------------
+
+ALLOWED_URL_SCHEMES = {"http", "https"}
+SAFE_PATH_RE = re.compile(r"^[a-zA-Z0-9_./-]+$")
+
+
+def validate_source_url(url: str) -> str | None:
+    """Validate source URL. Returns error message or None if valid."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ALLOWED_URL_SCHEMES:
+        return f"Invalid URL scheme '{parsed.scheme}'. Only http/https allowed."
+    if not parsed.hostname:
+        return "URL must have a hostname."
+    # Block common SSRF targets
+    hostname = parsed.hostname.lower()
+    if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"):
+        if not os.environ.get("ALLOW_LOCALHOST_SOURCES"):
+            return (
+                "Localhost sources blocked (SSRF protection). "
+                "Set ALLOW_LOCALHOST_SOURCES=1 to override."
+            )
+    if hostname.startswith("169.254.") or hostname.startswith("metadata"):
+        return "Cloud metadata endpoints blocked (SSRF protection)."
+    return None
+
+
+def validate_output_path(path: str) -> str | None:
+    """Validate output file path. Returns error message or None if valid."""
+    resolved = Path(path).resolve()
+    # Must be under a safe base directory
+    allowed_bases = [
+        Path("/opt/hls-scte35/output"),
+        Path("/tmp"),
+        Path("/var/tmp"),
+    ]
+    if not any(str(resolved).startswith(str(b)) for b in allowed_bases):
+        return f"Output path must be under /opt/hls-scte35/output, /tmp, or /var/tmp."
+    return None
+
+
+# ---------------------------------------------------------------------------
+# API Key Authentication
+# ---------------------------------------------------------------------------
+
+def require_api_key(f):
+    """Decorator that enforces API key auth if API_KEY env var is set."""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        api_key = os.environ.get("API_KEY")
+        if not api_key:
+            return f(*args, **kwargs)  # No key configured = no auth
+        provided = request.headers.get("X-API-Key") or request.args.get("api_key")
+        if provided != api_key:
+            return jsonify({"error": "Unauthorized. Provide X-API-Key header."}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+
+class Metrics:
+    """Simple in-memory metrics counters for observability."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.pipelines_created = 0
+        self.pipelines_stopped = 0
+        self.pipelines_failed = 0
+        self.restarts_total = 0
+        self.start_time = time.monotonic()
+
+    def inc(self, counter: str, amount: int = 1):
+        with self._lock:
+            current = getattr(self, counter, 0)
+            setattr(self, counter, current + amount)
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "pipelines_created": self.pipelines_created,
+                "pipelines_stopped": self.pipelines_stopped,
+                "pipelines_failed": self.pipelines_failed,
+                "restarts_total": self.restarts_total,
+                "uptime_seconds": round(time.monotonic() - self.start_time, 1),
+            }
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +282,15 @@ class Pipeline:
                 tsp_cmd += ["--udp-address", params["udp_address"]]
             if params.get("udp_port"):
                 tsp_cmd += ["--udp-port", str(params["udp_port"])]
+        if output_mode == "srt":
+            if params.get("srt_address"):
+                tsp_cmd += ["--srt-address", params["srt_address"]]
+            if params.get("srt_port"):
+                tsp_cmd += ["--srt-port", str(params["srt_port"])]
+            if params.get("srt_mode"):
+                tsp_cmd += ["--srt-mode", params["srt_mode"]]
+            if params.get("srt_latency"):
+                tsp_cmd += ["--srt-latency", str(params["srt_latency"])]
         if drm_mode and drm_mode != "none":
             tsp_cmd += ["--drm-mode", drm_mode]
         if drm_iv:
@@ -365,10 +468,27 @@ class PipelineRegistry:
     def _generate_id(self) -> str:
         return uuid.uuid4().hex[:8]
 
-    def create(self, params: dict) -> dict:
+    def create(self, params: dict, metrics: Metrics | None = None) -> dict:
         source_url = params.get("source_url")
         if not source_url:
             return {"error": "source_url is required", "status": 400}
+
+        # Validate source URL (SSRF protection)
+        url_error = validate_source_url(source_url)
+        if url_error:
+            return {"error": url_error, "status": 400}
+
+        # Validate output path if specified
+        output_file = params.get("output_file")
+        if output_file:
+            path_error = validate_output_path(output_file)
+            if path_error:
+                return {"error": path_error, "status": 400}
+
+        # Validate DRM key format
+        drm_key = params.get("drm_key")
+        if drm_key and not re.match(r'^[0-9a-fA-F]{32}$', drm_key):
+            return {"error": "drm_key must be exactly 32 hex digits", "status": 400}
 
         with self._lock:
             pipeline_id = self._generate_id()
@@ -377,9 +497,13 @@ class PipelineRegistry:
             try:
                 result = pipeline.start()
             except RuntimeError as e:
+                if metrics:
+                    metrics.inc("pipelines_failed")
                 return {"error": str(e), "status": 500}
 
             self._pipelines[pipeline_id] = pipeline
+            if metrics:
+                metrics.inc("pipelines_created")
             return result
 
     def get(self, pipeline_id: str) -> dict | None:
@@ -393,21 +517,25 @@ class PipelineRegistry:
         with self._lock:
             return [p.status() for p in self._pipelines.values()]
 
-    def remove(self, pipeline_id: str) -> dict | None:
+    def remove(self, pipeline_id: str, metrics: Metrics | None = None) -> dict | None:
         with self._lock:
             pipeline = self._pipelines.pop(pipeline_id, None)
             if not pipeline:
                 return None
             stopped = pipeline.stop()
+            if metrics:
+                metrics.inc("pipelines_stopped")
             return {"id": pipeline_id, "state": "stopped", "stopped": stopped}
 
-    def remove_all(self) -> list[dict]:
+    def remove_all(self, metrics: Metrics | None = None) -> list[dict]:
         with self._lock:
             results = []
             for pid in list(self._pipelines.keys()):
                 pipeline = self._pipelines.pop(pid)
                 stopped = pipeline.stop()
                 results.append({"id": pid, "state": "stopped", "stopped": stopped})
+            if metrics and results:
+                metrics.inc("pipelines_stopped", len(results))
             return results
 
 
@@ -419,14 +547,24 @@ def create_app(config_path: str) -> Flask:
     app = Flask(__name__)
     app.logger.setLevel(logging.INFO)
     registry = PipelineRegistry(config_path)
+    metrics = Metrics()
 
     @app.route("/api/v1/health", methods=["GET"])
     def health():
         return jsonify({"status": "ok"})
 
+    @app.route("/api/v1/metrics", methods=["GET"])
+    @require_api_key
+    def get_metrics():
+        """Return pipeline metrics and counters."""
+        data = metrics.snapshot()
+        data["active_pipelines"] = len(registry.list_all())
+        return jsonify(data)
+
     # --- Multi-pipeline endpoints ---
 
     @app.route("/api/v1/pipelines", methods=["POST"])
+    @require_api_key
     def create_pipeline():
         """
         Create and start a new pipeline.
@@ -448,7 +586,7 @@ def create_app(config_path: str) -> Flask:
             drm_iv: pre-shared IV, 32 hex digits (optional)
         """
         params = request.get_json(force=True, silent=True) or {}
-        result = registry.create(params)
+        result = registry.create(params, metrics=metrics)
 
         if "error" in result:
             return jsonify(result), result.pop("status", 400)
@@ -468,36 +606,40 @@ def create_app(config_path: str) -> Flask:
         return jsonify(result)
 
     @app.route("/api/v1/pipelines/<pipeline_id>", methods=["DELETE"])
+    @require_api_key
     def delete_pipeline(pipeline_id):
         """Stop and remove a specific pipeline."""
-        result = registry.remove(pipeline_id)
+        result = registry.remove(pipeline_id, metrics=metrics)
         if result is None:
             return jsonify({"error": "Pipeline not found"}), 404
         return jsonify(result)
 
     @app.route("/api/v1/pipelines", methods=["DELETE"])
+    @require_api_key
     def delete_all_pipelines():
         """Stop and remove all pipelines."""
-        results = registry.remove_all()
+        results = registry.remove_all(metrics=metrics)
         return jsonify({"stopped": results})
 
     # --- Legacy single-pipeline endpoints (backwards compat) ---
 
     @app.route("/api/v1/pipeline", methods=["POST"])
+    @require_api_key
     def legacy_start():
         """Backwards-compatible single pipeline start. Stops any existing pipelines first."""
-        registry.remove_all()
+        registry.remove_all(metrics=metrics)
         params = request.get_json(force=True, silent=True) or {}
-        result = registry.create(params)
+        result = registry.create(params, metrics=metrics)
 
         if "error" in result:
             return jsonify(result), result.pop("status", 400)
         return jsonify(result), 201
 
     @app.route("/api/v1/pipeline", methods=["DELETE"])
+    @require_api_key
     def legacy_stop():
         """Backwards-compatible: stop all pipelines."""
-        results = registry.remove_all()
+        results = registry.remove_all(metrics=metrics)
         if not results:
             return jsonify({"state": "already_stopped"})
         return jsonify(results[0] if len(results) == 1 else {"stopped": results})
