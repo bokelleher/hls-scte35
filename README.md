@@ -24,13 +24,30 @@ HLS Source             manifest_monitor.py        launch_tsp.sh
 
 ### Signal Detection
 
-The monitor detects SCTE-35 ad markers from three sources:
+The monitor detects SCTE-35 signals from three sources:
 
 | Signal Type | HLS Tag | Segment Format |
 |---|---|---|
 | CUE tags | `EXT-X-CUE-OUT` / `EXT-X-CUE-IN` | TS |
 | DATERANGE | `EXT-X-DATERANGE` with `SCTE35-CMD` | TS or fMP4 |
 | In-band | Passthrough (TSDuck native) | TS |
+
+### SCTE-35 Command Types
+
+`EXT-X-DATERANGE` tags carry the full raw SCTE-35 section in their `SCTE35-CMD` attribute. The pipeline injects these as raw binary sections, preserving all command types and descriptor chains with zero information loss:
+
+| Type | Command | Use Case |
+|---|---|---|
+| 0x00 | splice_null | Heartbeat / keepalive |
+| 0x04 | splice_schedule | Scheduled future events |
+| 0x05 | splice_insert | Ad break start/end |
+| 0x06 | time_signal | Program boundaries, chapter marks, placement opportunities |
+| 0x07 | bandwidth_reservation | Reserved capacity signaling |
+| 0xFF | private_command | Vendor-specific extensions |
+
+Type 0x06 (`time_signal`) is the most versatile — it carries `segmentation_descriptor` entries that define events like program start/end, chapter marks, provider/distributor ad opportunities, network boundaries, and unscheduled events. All segmentation types are preserved through raw passthrough.
+
+CUE-OUT/CUE-IN tags (which carry no raw binary) are still reconstructed as `splice_insert` XML commands.
 
 ### fMP4 Input
 

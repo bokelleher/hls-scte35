@@ -132,14 +132,24 @@ def build_time_signal_xml(pts_time: int) -> str:
   </splice_information_table>"""
 
 
+SCTE35_COMMAND_NAMES = {
+    0x00: "splice_null",
+    0x04: "splice_schedule",
+    0x05: "splice_insert",
+    0x06: "time_signal",
+    0x07: "bandwidth_reservation",
+    0xFF: "private_command",
+}
+
+
 def decode_daterange_scte35(scte35_cmd_b64: str) -> dict:
     """
     Decode the SCTE35-CMD base64 attribute from EXT-X-DATERANGE.
-    Returns a dict with splice_command_type and relevant fields.
+    Returns a dict with splice_command_type, command name, and raw bytes.
     """
     raw = base64.b64decode(scte35_cmd_b64)
     if len(raw) < 14:
-        return {"raw": raw.hex(), "error": "section too short"}
+        return {"raw_hex": raw.hex(), "raw_bytes": raw, "error": "section too short"}
 
     table_id = raw[0]
     splice_command_type = raw[13]
@@ -147,6 +157,7 @@ def decode_daterange_scte35(scte35_cmd_b64: str) -> dict:
     return {
         "table_id": table_id,
         "splice_command_type": splice_command_type,
+        "command_name": SCTE35_COMMAND_NAMES.get(splice_command_type, f"unknown_0x{splice_command_type:02X}"),
         "raw_hex": raw.hex(),
         "raw_bytes": raw,
     }
@@ -197,6 +208,7 @@ class ManifestMonitor:
 
         # Pending splice commands to write as a batch
         self.pending_commands: list[str] = []
+        self.pending_raw_sections: list[bytes] = []
 
         # Track PTS baseline from PROGRAM-DATE-TIME
         self.pdt_base: datetime | None = None
@@ -294,25 +306,44 @@ class ManifestMonitor:
         self.pending_commands.append(xml_fragment)
         self.logger.info(f"Queued splice command: {label}")
 
+    def _queue_raw_section(self, raw_bytes: bytes, label: str):
+        """Queue a raw SCTE-35 binary section for direct injection."""
+        self.pending_raw_sections.append(raw_bytes)
+        self.logger.info(f"Queued raw SCTE-35 section: {label}")
+
     def _flush_commands(self):
-        """Write all pending commands to the single inject file."""
-        if not self.pending_commands:
-            return
+        """Write all pending commands (XML and raw binary) to inject files."""
+        # Flush XML commands
+        if self.pending_commands:
+            xml = '<?xml version="1.0" encoding="UTF-8"?>\n<tsduck>\n'
+            for cmd in self.pending_commands:
+                xml += cmd + "\n"
+            xml += "</tsduck>\n"
 
-        xml = '<?xml version="1.0" encoding="UTF-8"?>\n<tsduck>\n'
-        for cmd in self.pending_commands:
-            xml += cmd + "\n"
-        xml += "</tsduck>\n"
+            tmp_path = self.inject_file.with_suffix(".tmp")
+            tmp_path.write_text(xml)
+            tmp_path.rename(self.inject_file)
 
-        # Atomic write: write to temp file then rename
-        tmp_path = self.inject_file.with_suffix(".tmp")
-        tmp_path.write_text(xml)
-        tmp_path.rename(self.inject_file)
+            self.logger.info(
+                f"Wrote {len(self.pending_commands)} XML command(s) to {self.inject_file.name}"
+            )
+            self.pending_commands.clear()
 
-        self.logger.info(
-            f"Wrote {len(self.pending_commands)} command(s) to {self.inject_file.name}"
-        )
-        self.pending_commands.clear()
+        # Flush raw binary sections
+        if self.pending_raw_sections:
+            bin_file = self.inject_file.with_suffix(".bin")
+            # Concatenate all raw sections into one binary file
+            # Each section is a complete splice_information_table
+            raw_data = b"".join(self.pending_raw_sections)
+
+            tmp_path = bin_file.with_suffix(".btmp")
+            tmp_path.write_bytes(raw_data)
+            tmp_path.rename(bin_file)
+
+            self.logger.info(
+                f"Wrote {len(self.pending_raw_sections)} raw section(s) to {bin_file.name}"
+            )
+            self.pending_raw_sections.clear()
 
     def _duration_to_pts(self, seconds: float) -> int:
         return int(seconds * 90000)
@@ -488,11 +519,36 @@ class ManifestMonitor:
             return
 
         decoded = decode_daterange_scte35(cmd_b64)
+        cmd_type = decoded.get("splice_command_type", -1)
+        cmd_name = decoded.get("command_name", "unknown")
+        raw_bytes = decoded.get("raw_bytes")
+
         self.logger.info(
-            f"DATERANGE {dr_id}: command_type=0x{decoded.get('splice_command_type', 0):02X} "
-            f"raw={decoded.get('raw_hex', 'N/A')}"
+            f"DATERANGE {dr_id}: {cmd_name} (0x{cmd_type:02X}) "
+            f"raw_len={len(raw_bytes) if raw_bytes else 0}"
         )
 
+        if decoded.get("error"):
+            self.logger.warning(
+                f"DATERANGE {dr_id}: malformed SCTE-35 section: {decoded['error']}"
+            )
+            return
+
+        # Raw passthrough: inject the original SCTE-35 binary section directly.
+        # This preserves all command types (time_signal, splice_insert,
+        # splice_schedule, bandwidth_reservation, private_command) and their
+        # full descriptor chains (segmentation_descriptor, etc.) with zero
+        # information loss.
+        if raw_bytes and len(raw_bytes) >= 14:
+            self._queue_raw_section(
+                raw_bytes,
+                f"DATERANGE {dr_id} {cmd_name} (0x{cmd_type:02X})"
+            )
+            return
+
+        # Fallback: reconstruct XML if raw bytes are unavailable or too short.
+        # This path handles SCTE35-OUT/SCTE35-IN attributes that may not
+        # contain a full section.
         start_date_str = daterange.get("start_date")
         pts = None
         if start_date_str:
@@ -507,7 +563,7 @@ class ManifestMonitor:
         dur_pts = self._duration_to_pts(float(dur_str)) if dur_str else None
 
         is_out = scte35_out is not None or (
-            scte35_cmd is not None and decoded.get("splice_command_type") == 5
+            scte35_cmd is not None and cmd_type == 0x05
         )
 
         xml = build_splice_insert_xml(

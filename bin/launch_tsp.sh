@@ -116,6 +116,7 @@ OUTPUT_BITRATE="${OUTPUT_BITRATE:-6000000}"
 OUTPUT_MODE="${OUTPUT_MODE:-udp}"
 INJECT_DIR="${INJECT_DIR:-/opt/hls-scte35/inject}"
 INJECT_FILE="${INJECT_DIR}/splice.xml"
+INJECT_BIN="${INJECT_DIR}/splice.bin"
 DRM_MODE="${DRM_MODE:-none}"
 
 # --- Validate required values ---
@@ -142,14 +143,19 @@ fi
 # --- Setup directories ---
 mkdir -p "$LOG_DIR" "$INJECT_DIR"
 
-# --- Create seed inject file so tsp has something to watch ---
-# The monitor will overwrite this with real splice commands.
+# --- Create seed inject files so tsp has something to watch ---
+# The monitor will overwrite these with real splice commands.
 if [ ! -f "$INJECT_FILE" ]; then
     cat > "$INJECT_FILE" <<'SEED'
 <?xml version="1.0" encoding="UTF-8"?>
 <tsduck>
 </tsduck>
 SEED
+fi
+
+# Empty binary seed (tsp --poll-files needs the file to exist)
+if [ ! -f "$INJECT_BIN" ]; then
+    : > "$INJECT_BIN"
 fi
 
 echo "$(date -Iseconds) Starting TSDuck pipeline"
@@ -214,6 +220,7 @@ if [ "$USE_FFMPEG" = true ]; then
         -P continuity
         -P pmt --add-pid "$SCTE35_PID"/0x86 --add-registration 0x43554549 --add-pid-registration "$SCTE35_PID"/0x43554549 --set-cue-type "$SCTE35_PID"/0
         -P inject --pid "$SCTE35_PID" --xml --poll-files --stuffing --inter-packet 400 --repeat 3 "$INJECT_FILE"
+        -P inject --pid "$SCTE35_PID" --binary --poll-files --stuffing --inter-packet 400 --repeat 3 "$INJECT_BIN"
         -P tables --pid "$SCTE35_PID" --log --log-hexa-line --log-size 80
         -P regulate --bitrate "$OUTPUT_BITRATE"
     )
@@ -225,6 +232,7 @@ else
         -P continuity
         -P pmt --add-pid "$SCTE35_PID"/0x86 --add-registration 0x43554549 --add-pid-registration "$SCTE35_PID"/0x43554549 --set-cue-type "$SCTE35_PID"/0
         -P inject --pid "$SCTE35_PID" --xml --poll-files --stuffing --inter-packet 400 --repeat 3 "$INJECT_FILE"
+        -P inject --pid "$SCTE35_PID" --binary --poll-files --stuffing --inter-packet 400 --repeat 3 "$INJECT_BIN"
         -P tables --pid "$SCTE35_PID" --log --log-hexa-line --log-size 80
         -P regulate --bitrate "$OUTPUT_BITRATE"
     )
