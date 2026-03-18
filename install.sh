@@ -7,6 +7,7 @@
 #   sudo ./install.sh --deps-only  # Install system dependencies only
 #   ./install.sh --no-deps         # Pipeline setup only (skip apt/dnf)
 #   sudo ./install.sh --service    # Full install + systemd services
+#   sudo ./install.sh --service --api-port 9090  # Custom API port
 #
 # Supported: Ubuntu 22.04/24.04, Debian 12, Rocky/Alma/RHEL 8/9
 # Requires: root for dependency installation and service setup
@@ -18,19 +19,22 @@ INSTALL_DIR="/opt/hls-scte35"
 DEPS=true
 PIPELINE=true
 SERVICE=false
+API_PORT=8080
 TSDUCK_VERSION="3.42"
 TSDUCK_BUILD="4421"
 
 # --- Parse args ---
-for arg in "$@"; do
-    case "$arg" in
-        --deps-only)  PIPELINE=false ;;
-        --no-deps)    DEPS=false ;;
-        --service)    SERVICE=true ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --deps-only)  PIPELINE=false; shift ;;
+        --no-deps)    DEPS=false; shift ;;
+        --service)    SERVICE=true; shift ;;
+        --api-port)   API_PORT="$2"; shift 2 ;;
         --help|-h)
-            sed -n '3,11p' "$0"
+            sed -n '3,12p' "$0"
             exit 0
             ;;
+        *)  shift ;;
     esac
 done
 
@@ -268,7 +272,7 @@ StartLimitBurst=5
 Type=simple
 User=hls-scte35
 Group=hls-scte35
-ExecStart=${INSTALL_DIR}/venv/bin/python3 ${INSTALL_DIR}/bin/api_server.py --config ${INSTALL_DIR}/config/pipeline.toml
+ExecStart=${INSTALL_DIR}/venv/bin/python3 ${INSTALL_DIR}/bin/api_server.py --config ${INSTALL_DIR}/config/pipeline.toml --port ${API_PORT}
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -314,7 +318,7 @@ EOF
     echo "    journalctl -u hls-scte35-monitor -f"
     echo "    journalctl -u hls-scte35-api -f"
     echo ""
-    echo "  API server:  http://localhost:8080/api/v1/pipeline"
+    echo "  API server:  http://localhost:${API_PORT}/api/v1/pipeline"
     echo ""
     echo "  NOTE: Edit ${INSTALL_DIR}/config/pipeline.toml before starting."
 }
@@ -398,6 +402,15 @@ SEED
         case "${REPLY:-Y}" in
             [Yy]*|"") SERVICE=true ;;
         esac
+    fi
+
+    # Prompt for API port when installing as a service (unless set via --api-port)
+    if [ "$SERVICE" = true ] && [ "$API_PORT" = "8080" ]; then
+        echo ""
+        read -rp "$(echo -e '\033[1;32m==>\033[0m') API server port [8080]: " PORT_REPLY
+        if [ -n "$PORT_REPLY" ]; then
+            API_PORT="$PORT_REPLY"
+        fi
     fi
 
     if [ "$SERVICE" = true ]; then
