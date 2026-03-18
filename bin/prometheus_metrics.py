@@ -15,9 +15,12 @@ Usage:
     text = render_prometheus()
 """
 
+import json
+import os
 import threading
 import time
 from collections import defaultdict
+from pathlib import Path
 
 
 class _MetricStore:
@@ -122,6 +125,47 @@ class _MetricStore:
                     result[f"{key}_avg"] = sum(observations) / len(observations)
             result["process_start_time_seconds"] = self._start_time
             return result
+
+    def export_to_file(self, path: str):
+        """Write metrics snapshot to a JSON file for cross-process sharing."""
+        data = self.snapshot()
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(data, f)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+    def import_from_directory(self, directory: str):
+        """
+        Read and merge metrics from all .metrics.json files in a directory.
+        Used by the API server to aggregate metrics from monitor subprocesses.
+        """
+        metrics_dir = Path(directory)
+        if not metrics_dir.is_dir():
+            return
+        for metrics_file in metrics_dir.glob("**/*.metrics.json"):
+            try:
+                with open(metrics_file) as f:
+                    data = json.load(f)
+                with self._lock:
+                    for key, val in data.items():
+                        if not isinstance(val, (int, float)):
+                            continue
+                        # Merge: for counters use max (they only go up),
+                        # for gauges use latest file value
+                        name = key.split("{")[0].rstrip("_count").rstrip("_sum").rstrip("_avg")
+                        if name in [n for n, (t, _) in self._meta.items() if t == "gauge"]:
+                            self._gauges[key] = val
+                        else:
+                            # Counter: take the max of current and imported
+                            if key in self._counters:
+                                self._counters[key] = max(self._counters[key], val)
+                            else:
+                                self._counters[key] = val
+            except (OSError, json.JSONDecodeError):
+                pass
 
     def _key(self, name: str, labels: dict | None) -> str:
         """Build a metric key with optional labels."""

@@ -794,6 +794,10 @@ class ManifestMonitor:
         prom.set("seen_cues_size", float(len(self._seen_cues)))
         prom.set("seen_raw_hashes_size", float(len(self._seen_raw_hashes)))
 
+        # Export metrics to file for cross-process aggregation by the API server
+        metrics_file = self.inject_dir / "monitor.metrics.json"
+        prom.export_to_file(str(metrics_file))
+
     def _adapt_poll_interval(self, playlist) -> float:
         """
         Adapt poll interval based on target duration.

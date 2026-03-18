@@ -580,6 +580,9 @@ def create_app(config_path: str) -> Flask:
     @require_api_key
     def get_metrics():
         """Return pipeline metrics. Prometheus format if Accept header requests it."""
+        # Import metrics from monitor subprocesses (cross-process aggregation)
+        prom.import_from_directory(str(INSTALL_DIR / "inject"))
+
         # Update active pipeline count gauge
         prom.set("active_pipelines", float(len(registry.list_all())))
 
