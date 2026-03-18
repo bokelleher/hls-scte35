@@ -162,7 +162,7 @@
             },
             {
                 "id": 5,
-                "title": "SCTE-35 Events Detected (per min)",
+                "title": "SCTE-35 Events Detected",
                 "type": "timeseries",
                 "gridPos": {
                     "h": 8,
@@ -172,7 +172,7 @@
                 },
                 "targets": [
                     {
-                        "expr": "rate(scte35_events_detected_total[5m]) * 60",
+                        "expr": "scte35_events_detected_total",
                         "legendFormat": "{{type}}",
                         "refId": "A"
                     }
@@ -183,11 +183,11 @@
                 },
                 "fieldConfig": {
                     "defaults": {
-                        "unit": "cpm",
+                        "unit": "short",
                         "custom": {
                             "fillOpacity": 20,
                             "stacking": {
-                                "mode": "normal"
+                                "mode": "none"
                             }
                         }
                     }
@@ -195,7 +195,7 @@
             },
             {
                 "id": 6,
-                "title": "SCTE-35 Events Injected (per min)",
+                "title": "SCTE-35 Events Injected",
                 "type": "timeseries",
                 "gridPos": {
                     "h": 8,
@@ -205,7 +205,7 @@
                 },
                 "targets": [
                     {
-                        "expr": "rate(scte35_events_injected_total[5m]) * 60",
+                        "expr": "scte35_events_injected_total",
                         "legendFormat": "{{format}}",
                         "refId": "A"
                     }
@@ -216,11 +216,11 @@
                 },
                 "fieldConfig": {
                     "defaults": {
-                        "unit": "cpm",
+                        "unit": "short",
                         "custom": {
                             "fillOpacity": 20,
                             "stacking": {
-                                "mode": "normal"
+                                "mode": "none"
                             }
                         }
                     }
