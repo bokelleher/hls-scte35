@@ -93,7 +93,8 @@ curl -s "https://keyserver.example.com/key/abc123" | xxd -p
 
 # 3. Use it
 DRM_KEY=00112233445566778899aabbccddeeff ./bin/launch_tsp.sh \
-    --source-url http://your-source/index.m3u8 --drm-mode aes128 ...
+    --source-url http://your-source/index.m3u8 --drm-mode aes128 \
+    --output-mode file --output-file /tmp/decrypted.ts
 ```
 
 **From your packaging system**: Encoders and packagers (AWS MediaPackage, Unified Streaming, Wowza, etc.) display or export the content key during encryption setup. It's typically shown as a 32-character hex string or a base64 value. If base64, convert:
