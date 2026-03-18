@@ -42,6 +42,24 @@ ffmpeg -i <hls_url> -c copy -f mpegts pipe:1 | tsp -I file ...
 
 PTS calibration runs automatically to correct for timestamp rebasing during transmux.
 
+### DRM Decryption
+
+The pipeline can ingest DRM-protected HLS streams by decrypting them before processing. Decryption happens upstream of TSDuck via ffmpeg.
+
+| DRM Mode | Description | How It Works |
+|---|---|---|
+| `none` | No decryption (default) | Direct `tsp -I hls` input |
+| `auto` | Detect from `EXT-X-KEY` in manifest | ffmpeg auto-fetches key from URI and decrypts |
+| `aes128` | Pre-shared AES-128 key | ffmpeg decrypts with supplied key via `-decryption_key` |
+
+When DRM is active, the pipeline routes through ffmpeg:
+
+```
+ffmpeg -decryption_key <key> -i <hls_url> -c copy -f mpegts pipe:1 | tsp -I file ...
+```
+
+**Security**: Keys are passed via environment variable (`DRM_KEY`), never via CLI arguments. Keys are redacted in API responses and never written to logs.
+
 ## Prerequisites
 
 - **TSDuck** v3.42+ ([tsduck.io](https://tsduck.io))
@@ -142,6 +160,9 @@ Request body (JSON):
 | `udp_address` | string | | Multicast address (udp mode) |
 | `udp_port` | int | | Multicast port (udp mode) |
 | `log_level` | string | `"INFO"` | `DEBUG`, `INFO`, `WARN`, `ERROR` |
+| `drm_mode` | string | `"none"` | `none`, `auto`, `aes128` |
+| `drm_key` | string | | AES key, 32 hex digits (for `aes128` mode) |
+| `drm_iv` | string | | IV, 32 hex digits (optional) |
 
 ## CLI Reference
 
@@ -159,6 +180,9 @@ Options:
   --udp-address ADDR      UDP multicast address
   --udp-port PORT         UDP port
   --inject-dir DIR        Splice XML directory
+  --drm-mode MODE         DRM: none, auto, aes128
+  --drm-key HEX           Pre-shared AES key (32 hex digits)
+  --drm-iv HEX            Pre-shared IV (32 hex digits)
 ```
 
 ### manifest_monitor.py
@@ -173,6 +197,8 @@ Options:
   --mode MODE             auto_detect, manifest_only, inband_only
   --inject-dir DIR        Splice XML output directory
   --log-level LEVEL       DEBUG, INFO, WARN, ERROR
+  --drm-mode MODE         DRM: none, auto, aes128
+  --drm-key HEX           Pre-shared AES key (32 hex digits)
 ```
 
 ## Examples
@@ -311,6 +337,65 @@ curl -X POST http://localhost:8080/api/v1/pipelines \
   }'
 ```
 
+### DRM-protected HLS with pre-shared key
+
+Decrypt an AES-128 encrypted HLS stream using a known content key.
+
+**CLI:**
+```bash
+# Pass key via environment variable (recommended — avoids /proc exposure)
+DRM_KEY=00112233445566778899aabbccddeeff \
+./bin/launch_tsp.sh --source-url http://origin.example.com/drm/index.m3u8 \
+    --output-mode file --output-file /tmp/decrypted.ts --drm-mode aes128
+
+DRM_KEY=00112233445566778899aabbccddeeff \
+python3 ./bin/manifest_monitor.py --source-url http://origin.example.com/drm/index.m3u8 \
+    --drm-mode aes128
+```
+
+**API:**
+```bash
+curl -X POST http://localhost:8080/api/v1/pipelines \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_url": "http://origin.example.com/drm/index.m3u8",
+    "output_mode": "file",
+    "drm_mode": "aes128",
+    "drm_key": "00112233445566778899aabbccddeeff"
+  }'
+```
+
+### DRM-protected HLS with auto key fetch
+
+Let ffmpeg automatically fetch the key from the `EXT-X-KEY` URI. Useful when the key server doesn't require authentication.
+
+**CLI:**
+```bash
+./bin/launch_tsp.sh --source-url http://origin.example.com/drm/index.m3u8 \
+    --output-mode file --output-file /tmp/decrypted.ts --drm-mode auto
+
+python3 ./bin/manifest_monitor.py --source-url http://origin.example.com/drm/index.m3u8 \
+    --drm-mode auto
+```
+
+**API:**
+```bash
+curl -X POST http://localhost:8080/api/v1/pipelines \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_url": "http://origin.example.com/drm/index.m3u8",
+    "output_mode": "file",
+    "drm_mode": "auto"
+  }'
+```
+
+For key servers requiring authentication, set `key_server_headers` in `pipeline.toml`:
+```toml
+[drm]
+mode = "auto"
+key_server_headers = { Authorization = "Bearer eyJhbG..." }
+```
+
 ### Multiple concurrent pipelines (API)
 
 Run several HLS sources through independent SCTE-35 pipelines simultaneously.
@@ -365,6 +450,11 @@ pid = 500
 default_duration = 30.0
 mode = "auto_detect"           # auto_detect | manifest_only | inband_only
 calibration_enabled = true     # PTS calibration for fMP4 sources
+
+[drm]
+mode = "none"                  # none | auto | aes128
+# key = "00112233..."         # pre-shared AES key (32 hex digits)
+# key_server_headers = { Authorization = "Bearer <token>" }
 
 [tsduck]
 output_mode = "udp"            # udp | srt | file

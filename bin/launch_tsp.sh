@@ -18,6 +18,9 @@
 #   --udp-address ADDR      UDP multicast address
 #   --udp-port PORT         UDP port
 #   --inject-dir DIR        Splice XML directory
+#   --drm-mode MODE         DRM: none, auto, aes128
+#   --drm-key HEX           Pre-shared AES key (32 hex digits)
+#   --drm-iv HEX            Pre-shared IV (32 hex digits)
 #
 # Tested against TSDuck v3.42
 #
@@ -37,6 +40,9 @@ CLI_OUTPUT_BITRATE=""
 CLI_UDP_ADDR=""
 CLI_UDP_PORT=""
 CLI_INJECT_DIR=""
+CLI_DRM_MODE=""
+CLI_DRM_KEY=""
+CLI_DRM_IV=""
 
 # --- Parse arguments ---
 while [[ $# -gt 0 ]]; do
@@ -49,8 +55,11 @@ while [[ $# -gt 0 ]]; do
         --udp-address)     CLI_UDP_ADDR="$2"; shift 2 ;;
         --udp-port)        CLI_UDP_PORT="$2"; shift 2 ;;
         --inject-dir)      CLI_INJECT_DIR="$2"; shift 2 ;;
+        --drm-mode)        CLI_DRM_MODE="$2"; shift 2 ;;
+        --drm-key)         CLI_DRM_KEY="$2"; shift 2 ;;
+        --drm-iv)          CLI_DRM_IV="$2"; shift 2 ;;
         --help|-h)
-            sed -n '10,21p' "$0"
+            sed -n '10,24p' "$0"
             exit 0
             ;;
         -*)
@@ -91,17 +100,43 @@ SRT_LATENCY=$(get_val "srt_latency")
 FILE_PATH="${CLI_OUTPUT_FILE:-$(get_val "file_path")}"
 INJECT_DIR="${CLI_INJECT_DIR:-$(get_val "inject_dir")}"
 
+# DRM config: env var > CLI > config file
+DRM_MODE="${CLI_DRM_MODE:-$(get_val "mode")}"
+# Look for mode under [drm] section specifically
+if [ -z "$DRM_MODE" ] || [ "$DRM_MODE" = "auto_detect" ] || [ "$DRM_MODE" = "manifest_only" ] || [ "$DRM_MODE" = "inband_only" ]; then
+    # The get_val matched [scte35] mode, not [drm] mode. Parse [drm] section explicitly.
+    DRM_MODE="${CLI_DRM_MODE:-$(sed -n '/^\[drm\]/,/^\[/{ /^mode/p }' "$CONFIG" 2>/dev/null | head -1 | sed 's/#.*//' | sed 's/.*= *"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' ')}"
+fi
+DRM_KEY="${DRM_KEY:-${CLI_DRM_KEY:-$(sed -n '/^\[drm\]/,/^\[/{ /^key /p }' "$CONFIG" 2>/dev/null | head -1 | sed 's/#.*//' | sed 's/.*= *"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' ')}}"
+DRM_IV="${CLI_DRM_IV:-$(sed -n '/^\[drm\]/,/^\[/{ /^iv /p }' "$CONFIG" 2>/dev/null | head -1 | sed 's/#.*//' | sed 's/.*= *"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' ')}"
+
 # --- Defaults ---
 SCTE35_PID="${SCTE35_PID:-500}"
 OUTPUT_BITRATE="${OUTPUT_BITRATE:-6000000}"
 OUTPUT_MODE="${OUTPUT_MODE:-udp}"
 INJECT_DIR="${INJECT_DIR:-/opt/hls-scte35/inject}"
 INJECT_FILE="${INJECT_DIR}/splice.xml"
+DRM_MODE="${DRM_MODE:-none}"
 
 # --- Validate required values ---
 if [ -z "$SOURCE_URL" ]; then
     echo "ERROR: source url not set. Use --source-url or set url in $CONFIG"
     exit 1
+fi
+
+# --- Validate DRM config ---
+if [ "$DRM_MODE" = "aes128" ] && [ -z "$DRM_KEY" ]; then
+    echo "ERROR: drm mode is aes128 but no key provided."
+    echo "  Use --drm-key, DRM_KEY env var, or set key in [drm] section of $CONFIG"
+    exit 1
+fi
+
+if [ -n "$DRM_KEY" ]; then
+    # Validate key is 32 hex digits
+    if ! echo "$DRM_KEY" | grep -qE '^[0-9a-fA-F]{32}$'; then
+        echo "ERROR: DRM key must be exactly 32 hex digits (16 bytes)"
+        exit 1
+    fi
 fi
 
 # --- Setup directories ---
@@ -123,6 +158,45 @@ echo "  SCTE-35 PID: $SCTE35_PID"
 echo "  Output:      $OUTPUT_MODE"
 echo "  Bitrate:     $OUTPUT_BITRATE bps"
 echo "  Inject file: $INJECT_FILE"
+echo "  DRM mode:    $DRM_MODE"
+
+# --- Determine input mode: direct HLS or ffmpeg decrypt ---
+USE_FFMPEG=false
+FFMPEG_ARGS=()
+
+case "$DRM_MODE" in
+    aes128)
+        # Pre-shared key: route through ffmpeg with explicit decryption key
+        USE_FFMPEG=true
+        FFMPEG_ARGS+=( -decryption_key "$DRM_KEY" )
+        if [ -n "$DRM_IV" ]; then
+            FFMPEG_ARGS+=( -decryption_iv "$DRM_IV" )
+        fi
+        echo "  DRM key:     ****${DRM_KEY: -4}"
+        ;;
+    auto)
+        # Let ffmpeg handle key fetch from EXT-X-KEY URI automatically
+        USE_FFMPEG=true
+        # Parse key_server_headers from config for auth
+        KS_HEADERS=$(sed -n '/^\[drm\]/,/^\[/{ /^key_server_headers/p }' "$CONFIG" 2>/dev/null | head -1)
+        if [ -n "$KS_HEADERS" ]; then
+            # Extract header values - simplified for common Authorization header
+            AUTH_VAL=$(echo "$KS_HEADERS" | grep -oP 'Authorization\s*=\s*"\K[^"]+')
+            if [ -n "$AUTH_VAL" ]; then
+                FFMPEG_ARGS+=( -headers "Authorization: ${AUTH_VAL}\r\n" )
+                echo "  DRM auth:    Authorization header configured"
+            fi
+        fi
+        echo "  DRM:         auto (ffmpeg handles EXT-X-KEY)"
+        ;;
+    none|"")
+        # No DRM, use direct TSDuck HLS input
+        ;;
+    *)
+        echo "ERROR: Unknown drm mode: $DRM_MODE (valid: none, auto, aes128)"
+        exit 1
+        ;;
+esac
 
 # --- Build tsp command ---
 # Note: Each plugin's options must come BEFORE the next -P or -O flag.
@@ -132,15 +206,29 @@ echo "  Inject file: $INJECT_FILE"
 #   continuity: (no required options)
 #   regulate: --bitrate
 
-TSP_CMD=(
-    tsp --verbose --add-input-stuffing 1/10
-    -I hls "$SOURCE_URL"
-    -P continuity
-    -P pmt --add-pid "$SCTE35_PID"/0x86 --add-registration 0x43554549 --add-pid-registration "$SCTE35_PID"/0x43554549 --set-cue-type "$SCTE35_PID"/0
-    -P inject --pid "$SCTE35_PID" --xml --poll-files --stuffing --inter-packet 400 --repeat 3 "$INJECT_FILE"
-    -P tables --pid "$SCTE35_PID" --log --log-hexa-line --log-size 80
-    -P regulate --bitrate "$OUTPUT_BITRATE"
-)
+if [ "$USE_FFMPEG" = true ]; then
+    # Build tsp with stdin input (ffmpeg pipes to it)
+    TSP_CMD=(
+        tsp --verbose --add-input-stuffing 1/10
+        -I file
+        -P continuity
+        -P pmt --add-pid "$SCTE35_PID"/0x86 --add-registration 0x43554549 --add-pid-registration "$SCTE35_PID"/0x43554549 --set-cue-type "$SCTE35_PID"/0
+        -P inject --pid "$SCTE35_PID" --xml --poll-files --stuffing --inter-packet 400 --repeat 3 "$INJECT_FILE"
+        -P tables --pid "$SCTE35_PID" --log --log-hexa-line --log-size 80
+        -P regulate --bitrate "$OUTPUT_BITRATE"
+    )
+else
+    # Direct HLS input (no DRM)
+    TSP_CMD=(
+        tsp --verbose --add-input-stuffing 1/10
+        -I hls "$SOURCE_URL"
+        -P continuity
+        -P pmt --add-pid "$SCTE35_PID"/0x86 --add-registration 0x43554549 --add-pid-registration "$SCTE35_PID"/0x43554549 --set-cue-type "$SCTE35_PID"/0
+        -P inject --pid "$SCTE35_PID" --xml --poll-files --stuffing --inter-packet 400 --repeat 3 "$INJECT_FILE"
+        -P tables --pid "$SCTE35_PID" --log --log-hexa-line --log-size 80
+        -P regulate --bitrate "$OUTPUT_BITRATE"
+    )
+fi
 
 # --- Output plugin ---
 case "$OUTPUT_MODE" in
@@ -162,7 +250,17 @@ case "$OUTPUT_MODE" in
         ;;
 esac
 
-echo "$(date -Iseconds) Executing: ${TSP_CMD[*]}"
 echo "---"
 
-exec "${TSP_CMD[@]}" 2>&1 | tee -a "${LOG_DIR}/tsp.log"
+if [ "$USE_FFMPEG" = true ]; then
+    # ffmpeg decrypts and transmuxes to MPEG-TS on stdout, piped to tsp stdin
+    echo "$(date -Iseconds) Executing: ffmpeg [...] | ${TSP_CMD[*]}"
+    ffmpeg -loglevel warning -re \
+        "${FFMPEG_ARGS[@]}" \
+        -i "$SOURCE_URL" \
+        -c copy -f mpegts pipe:1 \
+    | "${TSP_CMD[@]}" 2>&1 | tee -a "${LOG_DIR}/tsp.log"
+else
+    echo "$(date -Iseconds) Executing: ${TSP_CMD[*]}"
+    exec "${TSP_CMD[@]}" 2>&1 | tee -a "${LOG_DIR}/tsp.log"
+fi

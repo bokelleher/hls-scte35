@@ -62,6 +62,24 @@ inject_dir = "/opt/hls-scte35/inject"
 # Continuity counter fix
 fix_continuity = true
 
+[drm]
+# DRM decryption mode:
+#   "none"   - no decryption (default)
+#   "auto"   - detect from EXT-X-KEY in manifest, ffmpeg handles key fetch + decrypt
+#   "aes128" - force AES-128 decryption with a pre-shared key
+mode = "none"
+
+# Pre-shared content key (32 hex digits = 16 bytes)
+# Used when mode = "aes128". Overridden by DRM_KEY env var.
+# key = "00112233445566778899aabbccddeeff"
+
+# Pre-shared IV (32 hex digits). Optional: derived from media sequence if absent.
+# iv = "00000000000000000000000000000001"
+
+# HTTP headers for key server authentication (used in "auto" mode)
+# When ffmpeg fetches the key from the EXT-X-KEY URI, these headers are included.
+# key_server_headers = { Authorization = "Bearer <token>" }
+
 [logging]
 log_dir = "/opt/hls-scte35/logs"
 splice_log = "splice.log"

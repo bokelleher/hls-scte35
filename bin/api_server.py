@@ -44,6 +44,13 @@ BIN_DIR = Path(__file__).resolve().parent
 INSTALL_DIR = BIN_DIR.parent
 
 
+def _redact_key(key: str | None) -> str | None:
+    """Redact a hex key for safe display — show only last 4 chars."""
+    if not key:
+        return None
+    return "****" + key[-4:]
+
+
 def load_config(path: str = None) -> dict:
     config_path = path or os.environ.get("PIPELINE_CONFIG", DEFAULT_CONFIG)
     with open(config_path, "rb") as f:
@@ -110,6 +117,8 @@ class Pipeline:
                 "output_file": self.params.get("output_file"),
                 "scte35_pid": self.params.get("scte35_pid", 500),
                 "mode": self.params.get("mode", "auto_detect"),
+                "drm_mode": self.params.get("drm_mode", "none"),
+                "drm_key": _redact_key(self.params.get("drm_key")),
             },
             "tsp": {
                 "pid": self.tsp_proc.pid if self.tsp_proc else None,
@@ -141,6 +150,9 @@ class Pipeline:
         poll_interval = params.get("poll_interval", 6.0)
         mode = params.get("mode", "auto_detect")
         log_level = params.get("log_level", "INFO")
+        drm_mode = params.get("drm_mode", "none")
+        drm_key = params.get("drm_key")
+        drm_iv = params.get("drm_iv")
 
         # Seed the inject file
         inject_file = self.inject_dir / "splice.xml"
@@ -166,6 +178,11 @@ class Pipeline:
                 tsp_cmd += ["--udp-address", params["udp_address"]]
             if params.get("udp_port"):
                 tsp_cmd += ["--udp-port", str(params["udp_port"])]
+        if drm_mode and drm_mode != "none":
+            tsp_cmd += ["--drm-mode", drm_mode]
+        if drm_iv:
+            tsp_cmd += ["--drm-iv", drm_iv]
+        # DRM key is passed via env var, not CLI, to avoid /proc/pid/cmdline exposure
 
         # Build monitor command
         venv_python = str(INSTALL_DIR / "venv" / "bin" / "python3")
@@ -182,8 +199,15 @@ class Pipeline:
             "--inject-dir", inject_dir,
             "--log-level", log_level,
         ]
+        if drm_mode and drm_mode != "none":
+            monitor_cmd += ["--drm-mode", drm_mode]
         if poll_interval:
             monitor_cmd += ["--poll-interval", str(poll_interval)]
+
+        # Build env with DRM_KEY passed securely (not via CLI args)
+        proc_env = os.environ.copy()
+        if drm_key:
+            proc_env["DRM_KEY"] = drm_key
 
         try:
             self.tsp_proc = subprocess.Popen(
@@ -191,12 +215,14 @@ class Pipeline:
                 stdout=open(self.log_dir / "tsp.log", "a"),
                 stderr=subprocess.STDOUT,
                 preexec_fn=os.setsid,
+                env=proc_env,
             )
             self.monitor_proc = subprocess.Popen(
                 monitor_cmd,
                 stdout=open(self.log_dir / "monitor.log", "a"),
                 stderr=subprocess.STDOUT,
                 preexec_fn=os.setsid,
+                env=proc_env,
             )
         except Exception as e:
             self.stop()
@@ -319,6 +345,9 @@ def create_app(config_path: str) -> Flask:
             udp_address: multicast address (for udp mode)
             udp_port: multicast port (for udp mode)
             log_level: "DEBUG" | "INFO" | "WARN" | "ERROR"
+            drm_mode: "none" | "auto" | "aes128" (default: "none")
+            drm_key: pre-shared AES key, 32 hex digits (for aes128 mode)
+            drm_iv: pre-shared IV, 32 hex digits (optional)
         """
         params = request.get_json(force=True, silent=True) or {}
         result = registry.create(params)

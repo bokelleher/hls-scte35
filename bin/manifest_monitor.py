@@ -215,6 +215,71 @@ class ManifestMonitor:
         )
         self._start_time: float | None = None
 
+        # DRM detection state
+        drm_config = config.get("drm", {})
+        self.drm_mode = drm_config.get("mode", "none")
+        self.drm_detected: dict | None = None
+        self._drm_key_rotation_count = 0
+        self._last_key_uri: str | None = None
+
+    def _detect_drm(self, playlist) -> None:
+        """Parse EXT-X-KEY tags from playlist and report DRM status."""
+        if not hasattr(playlist, "keys") or not playlist.keys:
+            return
+
+        for key in playlist.keys:
+            if key is None:
+                continue
+
+            method = getattr(key, "method", None)
+            if not method or method == "NONE":
+                continue
+
+            uri = getattr(key, "uri", None)
+            iv = getattr(key, "iv", None)
+            keyformat = getattr(key, "keyformat", None) or "identity"
+
+            drm_info = {
+                "method": method,
+                "keyformat": keyformat,
+                "uri_present": uri is not None,
+                "iv_present": iv is not None,
+            }
+
+            # Detect key rotation
+            if uri and uri != self._last_key_uri:
+                if self._last_key_uri is not None:
+                    self._drm_key_rotation_count += 1
+                    self.logger.info(
+                        f"DRM key rotation detected (count={self._drm_key_rotation_count})"
+                    )
+                self._last_key_uri = uri
+
+            if self.drm_detected is None:
+                self.logger.info(
+                    f"DRM detected: method={method} keyformat={keyformat}"
+                )
+                # Log URI domain only, never the full key URI (security)
+                if uri:
+                    from urllib.parse import urlparse
+                    parsed = urlparse(uri)
+                    self.logger.info(f"  Key server: {parsed.hostname}")
+
+            self.drm_detected = drm_info
+            break  # Only report the first active key
+
+    @property
+    def drm_status(self) -> dict:
+        """Return current DRM status for API reporting."""
+        if self.drm_detected is None:
+            return {"state": "none"}
+        return {
+            "state": "detected",
+            "method": self.drm_detected.get("method"),
+            "keyformat": self.drm_detected.get("keyformat"),
+            "key_rotation_count": self._drm_key_rotation_count,
+        }
+
     def _next_event_id(self) -> int:
         eid = self.event_id
         self.event_id += 1
@@ -559,6 +624,9 @@ class ManifestMonitor:
                 self.logger.error(f"Failed to fetch rendition: {e}")
                 return
 
+        # Detect DRM from EXT-X-KEY tags
+        self._detect_drm(playlist)
+
         # Establish PDT baseline from first segment if available
         for seg in playlist.segments:
             if seg.program_date_time and self.pdt_base is None:
@@ -653,6 +721,15 @@ def parse_args(argv=None):
         choices=["DEBUG", "INFO", "WARN", "ERROR"],
         help="Log level (overrides config)",
     )
+    parser.add_argument(
+        "--drm-mode", dest="drm_mode",
+        choices=["none", "auto", "aes128"],
+        help="DRM decryption mode (overrides config)",
+    )
+    parser.add_argument(
+        "--drm-key", dest="drm_key",
+        help="Pre-shared AES key, 32 hex digits (overrides config)",
+    )
     return parser.parse_args(argv)
 
 
@@ -670,6 +747,10 @@ def apply_cli_overrides(config: dict, args) -> dict:
         config.setdefault("tsduck", {})["inject_dir"] = args.inject_dir
     if args.log_level:
         config.setdefault("logging", {})["level"] = args.log_level
+    if args.drm_mode:
+        config.setdefault("drm", {})["mode"] = args.drm_mode
+    if args.drm_key:
+        config.setdefault("drm", {})["key"] = args.drm_key
     return config
 
 
