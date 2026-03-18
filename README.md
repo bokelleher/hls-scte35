@@ -163,6 +163,157 @@ Options:
   --log-level LEVEL       DEBUG, INFO, WARN, ERROR
 ```
 
+## Examples
+
+Each example shows both CLI and REST API usage. The monitor and tsp always run as a pair.
+
+### HLS (TS segments) to local file
+
+Record a live stream with SCTE-35 markers to a local TS file.
+
+**CLI:**
+```bash
+./bin/launch_tsp.sh --source-url http://origin.example.com/live/index.m3u8 \
+    --output-mode file --output-file /recordings/live.ts
+
+python3 ./bin/manifest_monitor.py --source-url http://origin.example.com/live/index.m3u8
+```
+
+**API:**
+```bash
+curl -X POST http://localhost:8080/api/v1/pipeline \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_url": "http://origin.example.com/live/index.m3u8",
+    "output_mode": "file",
+    "output_file": "/recordings/live.ts"
+  }'
+```
+
+### HLS (TS segments) to UDP multicast
+
+Ingest HLS and output to a multicast group for downstream ad splicers.
+
+**CLI:**
+```bash
+./bin/launch_tsp.sh --source-url http://origin.example.com/live/index.m3u8 \
+    --output-mode udp --udp-address 239.1.1.1 --udp-port 5000 \
+    --output-bitrate 20000000
+
+python3 ./bin/manifest_monitor.py --source-url http://origin.example.com/live/index.m3u8
+```
+
+**API:**
+```bash
+curl -X POST http://localhost:8080/api/v1/pipeline \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_url": "http://origin.example.com/live/index.m3u8",
+    "output_mode": "udp",
+    "udp_address": "239.1.1.1",
+    "udp_port": 5000,
+    "output_bitrate": 20000000
+  }'
+```
+
+### HLS (TS segments) to SRT
+
+Feed a remote site over SRT with SCTE-35 signaling intact.
+
+**CLI:**
+```bash
+./bin/launch_tsp.sh --source-url http://origin.example.com/live/index.m3u8 \
+    --output-mode srt
+
+python3 ./bin/manifest_monitor.py --source-url http://origin.example.com/live/index.m3u8
+```
+
+SRT address, port, mode, and latency are set in `pipeline.toml` under `[tsduck]`:
+```toml
+srt_address = "192.168.1.50"
+srt_port = 9000
+srt_mode = "caller"
+srt_latency = 200
+```
+
+**API:**
+```bash
+curl -X POST http://localhost:8080/api/v1/pipeline \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_url": "http://origin.example.com/live/index.m3u8",
+    "output_mode": "srt"
+  }'
+```
+
+### HLS (fMP4/CMAF segments) to UDP multicast
+
+Ingest an fMP4 HLS source (auto-detected via `EXT-X-MAP` in the playlist). The pipeline routes through ffmpeg for transmux and uses `EXT-X-DATERANGE` tags for SCTE-35 detection.
+
+**CLI:**
+```bash
+./bin/launch_tsp.sh --source-url http://origin.example.com/cmaf/master.m3u8 \
+    --output-mode udp --udp-address 239.2.2.2 --udp-port 5001
+
+python3 ./bin/manifest_monitor.py --source-url http://origin.example.com/cmaf/master.m3u8 \
+    --mode manifest_only
+```
+
+**API:**
+```bash
+curl -X POST http://localhost:8080/api/v1/pipeline \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_url": "http://origin.example.com/cmaf/master.m3u8",
+    "output_mode": "udp",
+    "udp_address": "239.2.2.2",
+    "udp_port": 5001,
+    "mode": "manifest_only"
+  }'
+```
+
+### Manifest-only detection with custom PID
+
+Force manifest-based detection (ignore in-band) and use a non-default SCTE-35 PID.
+
+**CLI:**
+```bash
+./bin/launch_tsp.sh --source-url http://origin.example.com/live/index.m3u8 \
+    --output-mode file --output-file /tmp/out.ts --scte35-pid 600
+
+python3 ./bin/manifest_monitor.py --source-url http://origin.example.com/live/index.m3u8 \
+    --scte35-pid 600 --mode manifest_only --log-level DEBUG
+```
+
+**API:**
+```bash
+curl -X POST http://localhost:8080/api/v1/pipeline \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_url": "http://origin.example.com/live/index.m3u8",
+    "output_mode": "file",
+    "output_file": "/tmp/out.ts",
+    "scte35_pid": 600,
+    "mode": "manifest_only",
+    "log_level": "DEBUG"
+  }'
+```
+
+### Managing a running pipeline (API)
+
+```bash
+# Check if a pipeline is running
+curl http://localhost:8080/api/v1/pipeline/status
+
+# Stop the current pipeline
+curl -X DELETE http://localhost:8080/api/v1/pipeline
+
+# Start a new one with different settings
+curl -X POST http://localhost:8080/api/v1/pipeline \
+  -H "Content-Type: application/json" \
+  -d '{"source_url": "http://backup.example.com/live/index.m3u8", "output_mode": "file"}'
+```
+
 ## Configuration
 
 All settings are in `config/pipeline.toml`. CLI arguments and API parameters override config file values.
