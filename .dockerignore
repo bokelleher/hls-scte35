@@ -1,0 +1,16 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.git/
+.claude/
+.pytest_cache/
+logs/
+output/
+test-source/
+inject/*/
+inject/splice.xml
+inject/splice.bin
+*.md
+!README.md
+LICENSE

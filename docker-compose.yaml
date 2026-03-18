@@ -1,0 +1,19 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - PIPELINE_CONFIG=/opt/hls-scte35/config/pipeline.toml
+      - ALLOW_LOCALHOST_SOURCES=1
+      # Set API_KEY for production:
+      # - API_KEY=your-secret-key
+      # Set DRM_KEY if using aes128 mode:
+      # - DRM_KEY=00112233445566778899aabbccddeeff
+    volumes:
+      # Mount custom config (optional)
+      - ./config:/opt/hls-scte35/config:ro
+      # Persist output and logs
+      - ./output:/opt/hls-scte35/output
+      - ./logs:/opt/hls-scte35/logs
+    restart: unless-stopped

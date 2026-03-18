@@ -126,11 +126,36 @@ key_server_headers = { Authorization = "Bearer eyJhbG..." }
 
 The installer (`install.sh`) auto-detects the OS and uses the appropriate package manager. On RHEL-family systems it enables EPEL and RPM Fusion for ffmpeg.
 
-### Container / Cloud
+### Docker
 
-The pipeline runs in Docker or any OCI container based on the supported distros above. No special privileges are required beyond network access to the HLS source. For Kubernetes, each pipeline instance is stateless — the only persistent state is the inject directory (ephemeral) and logs.
+A multi-stage Dockerfile is included. It builds TSDuck from the official Debian package and runs on Alpine with gcompat for a small image.
 
-Not tested on Alpine (musl libc) — TSDuck does not publish Alpine packages.
+```bash
+# Build
+docker build -t hls-scte35 .
+
+# Run the API server
+docker run -p 8080:8080 hls-scte35
+
+# With API key and custom config
+docker run -p 8080:8080 \
+  -e API_KEY=mysecret \
+  -v ./config:/opt/hls-scte35/config:ro \
+  hls-scte35
+
+# Run a pipeline directly (no API server)
+docker run hls-scte35 \
+  ./bin/launch_tsp.sh --source-url http://origin/live.m3u8 --output-mode file
+
+# Docker Compose
+docker compose up -d
+```
+
+For Kubernetes, each pipeline instance is stateless — the inject directory is ephemeral and logs can be sent to stdout via the API server.
+
+### Alpine Note
+
+TSDuck does not publish Alpine/musl packages. The Dockerfile works around this by extracting Debian TSDuck binaries and running them under Alpine's `gcompat` (glibc compatibility layer). If you encounter issues, use `debian:bookworm-slim` as the base image instead — change `FROM alpine:3.20` to `FROM debian:bookworm-slim` and replace `apk add` with `apt-get install`.
 
 ## Prerequisites
 
