@@ -113,6 +113,13 @@ DRM_MODE="${CLI_DRM_MODE:-${CFG_DRM_MODE:-}}"
 DRM_KEY="${DRM_KEY:-${CLI_DRM_KEY:-${CFG_DRM_KEY:-}}}"
 DRM_IV="${CLI_DRM_IV:-${CFG_DRM_IV:-}}"
 
+# Tuning config
+FFMPEG_BUFFER_MODE="${CFG_FFMPEG_BUFFER_MODE:-default}"
+FFMPEG_ANALYZEDURATION="${CFG_FFMPEG_ANALYZEDURATION:-}"
+FFMPEG_PROBESIZE="${CFG_FFMPEG_PROBESIZE:-}"
+FFMPEG_REALTIME="${CFG_FFMPEG_REALTIME:-true}"
+REGULATE_BITRATE="${CFG_REGULATE_BITRATE:-}"
+
 # --- Defaults ---
 SCTE35_PID="${SCTE35_PID:-500}"
 OUTPUT_BITRATE="${OUTPUT_BITRATE:-6000000}"
@@ -256,7 +263,7 @@ if [ "$USE_FFMPEG" = true ]; then
         -P inject --pid "$SCTE35_PID" --xml --poll-files --stuffing --inter-packet 400 --repeat 3 "$INJECT_FILE"
         -P inject --pid "$SCTE35_PID" --binary --poll-files --stuffing --inter-packet 400 --repeat 3 "$INJECT_BIN"
         -P tables --pid "$SCTE35_PID" --log --log-hexa-line --log-size 80
-        -P regulate --bitrate "$OUTPUT_BITRATE"
+        -P regulate --bitrate "${REGULATE_BITRATE:-$OUTPUT_BITRATE}"
     )
 else
     # Direct HLS input (no DRM)
@@ -268,7 +275,7 @@ else
         -P inject --pid "$SCTE35_PID" --xml --poll-files --stuffing --inter-packet 400 --repeat 3 "$INJECT_FILE"
         -P inject --pid "$SCTE35_PID" --binary --poll-files --stuffing --inter-packet 400 --repeat 3 "$INJECT_BIN"
         -P tables --pid "$SCTE35_PID" --log --log-hexa-line --log-size 80
-        -P regulate --bitrate "$OUTPUT_BITRATE"
+        -P regulate --bitrate "${REGULATE_BITRATE:-$OUTPUT_BITRATE}"
     )
 fi
 
@@ -295,9 +302,36 @@ esac
 echo "---"
 
 if [ "$USE_FFMPEG" = true ]; then
+    # Build ffmpeg input args based on buffer tuning
+    FFMPEG_INPUT_ARGS=( -loglevel warning )
+
+    case "$FFMPEG_BUFFER_MODE" in
+        low_latency)
+            FFMPEG_INPUT_ARGS+=( -fflags nobuffer -flags low_delay -analyzeduration 500000 -probesize 500000 )
+            echo "  Tuning:      low_latency (ffmpeg: nobuffer, 500ms analyze)"
+            ;;
+        custom)
+            if [ -n "$FFMPEG_ANALYZEDURATION" ]; then
+                FFMPEG_INPUT_ARGS+=( -analyzeduration "$FFMPEG_ANALYZEDURATION" )
+            fi
+            if [ -n "$FFMPEG_PROBESIZE" ]; then
+                FFMPEG_INPUT_ARGS+=( -probesize "$FFMPEG_PROBESIZE" )
+            fi
+            echo "  Tuning:      custom (analyze=${FFMPEG_ANALYZEDURATION:-default} probe=${FFMPEG_PROBESIZE:-default})"
+            ;;
+        *)
+            echo "  Tuning:      default (ffmpeg defaults)"
+            ;;
+    esac
+
+    # Real-time throttle
+    if [ "$FFMPEG_REALTIME" = "true" ]; then
+        FFMPEG_INPUT_ARGS+=( -re )
+    fi
+
     # ffmpeg decrypts and transmuxes to MPEG-TS on stdout, piped to tsp stdin
     echo "$(date -Iseconds) Executing: ffmpeg [...] | ${TSP_CMD[*]}"
-    ffmpeg -loglevel warning -re \
+    ffmpeg "${FFMPEG_INPUT_ARGS[@]}" \
         "${FFMPEG_ARGS[@]}" \
         -i "$SOURCE_URL" \
         -c copy -f mpegts pipe:1 \

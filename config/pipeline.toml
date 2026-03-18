@@ -80,6 +80,41 @@ mode = "none"
 # When ffmpeg fetches the key from the EXT-X-KEY URI, these headers are included.
 # key_server_headers = { Authorization = "Bearer <token>" }
 
+[tuning]
+# --- ffmpeg input buffering ---
+# Reduce for lower latency; increase for stability on unreliable networks.
+# "low_latency" sets: -fflags nobuffer -flags low_delay -analyzeduration 500000 -probesize 500000
+# "default" uses ffmpeg defaults (higher latency, more stable)
+# "custom" uses the individual values below
+ffmpeg_buffer_mode = "default"    # default | low_latency | custom
+
+# Custom ffmpeg values (only used when ffmpeg_buffer_mode = "custom")
+# ffmpeg_analyzeduration = 5000000   # microseconds (ffmpeg default: 5000000)
+# ffmpeg_probesize = 5000000         # bytes (ffmpeg default: 5000000)
+
+# Real-time throttle: pace ffmpeg output to match source timing.
+# true = add -re flag (correct for live sources, adds ~1 segment latency)
+# false = no throttle (correct for VOD-as-live or when downstream handles pacing)
+ffmpeg_realtime = true
+
+# --- TSDuck regulate plugin ---
+# The regulate plugin paces output to the configured bitrate.
+# Set to 0 to disable regulation (tsp outputs as fast as it receives).
+# regulate_bitrate overrides [tsduck] output_bitrate for the regulate plugin only.
+# regulate_bitrate = 40000000
+
+# --- PTS calibration ---
+# How long to wait before probing the output for PTS calibration.
+# Shorter = calibrate faster but may fail if pipeline hasn't produced output yet.
+# Longer = more reliable but delays first accurate PTS-timed splice.
+calibration_delay_s = 10.0
+
+# --- SRT tuning ---
+# srt_latency (in [tsduck]) controls the SRT buffer. Tradeoffs:
+#   Low (50-100ms):  minimal delay, higher packet loss on lossy networks
+#   Medium (200ms):  good balance for LAN/WAN (default)
+#   High (500-2000ms): resilient to packet loss/jitter over internet
+
 [logging]
 log_dir = "/opt/hls-scte35/logs"
 splice_log = "splice.log"

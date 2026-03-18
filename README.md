@@ -77,6 +77,40 @@ ffmpeg -decryption_key <key> -i <hls_url> -c copy -f mpegts pipe:1 | tsp -I file
 
 **Security**: Keys are passed via environment variable (`DRM_KEY`), never via CLI arguments. Keys are redacted in API responses and never written to logs.
 
+### Obtaining Decryption Keys
+
+The pipeline doesn't generate keys — it consumes keys that were created during content encryption. Here's how to get them for each scenario:
+
+**Extract from the manifest directly** (AES-128 identity keyformat):
+```bash
+# 1. Find the key URI in the manifest
+curl -s http://your-source/index.m3u8 | grep EXT-X-KEY
+# => #EXT-X-KEY:METHOD=AES-128,URI="https://keyserver.example.com/key/abc123"
+
+# 2. Fetch the raw 16-byte key and convert to hex
+curl -s "https://keyserver.example.com/key/abc123" | xxd -p
+# => 00112233445566778899aabbccddeeff
+
+# 3. Use it
+DRM_KEY=00112233445566778899aabbccddeeff ./bin/launch_tsp.sh \
+    --source-url http://your-source/index.m3u8 --drm-mode aes128 ...
+```
+
+**From your packaging system**: Encoders and packagers (AWS MediaPackage, Unified Streaming, Wowza, etc.) display or export the content key during encryption setup. It's typically shown as a 32-character hex string or a base64 value. If base64, convert:
+```bash
+echo "ABEiM0RVZneImaq7zN3u/w==" | base64 -d | xxd -p
+# => 00112233445566778899aabbccddeeff
+```
+
+**Auto mode** (no key needed): If the key server doesn't require authentication, just use `--drm-mode auto` and ffmpeg will fetch the key from the `EXT-X-KEY` URI automatically. If auth is required, add headers in the config:
+```toml
+[drm]
+mode = "auto"
+key_server_headers = { Authorization = "Bearer eyJhbG..." }
+```
+
+**What you can't use this for**: Widevine and FairPlay keys are not raw AES keys — they require a license exchange protocol. Widevine support (via a license proxy) is planned for a future release. FairPlay requires Apple's proprietary SDK and is not feasible on Linux.
+
 ## Prerequisites
 
 - **TSDuck** v3.42+ ([tsduck.io](https://tsduck.io))
@@ -479,9 +513,117 @@ udp_address = "239.1.1.1"
 udp_port = 5000
 output_bitrate = 40000000
 
+[tuning]
+ffmpeg_buffer_mode = "default"   # default | low_latency | custom
+ffmpeg_realtime = true           # -re flag for live pacing
+
 [logging]
 level = "INFO"
 ```
+
+## Tuning & Latency
+
+The pipeline has several latency and buffer controls. The right settings depend on your source type and network conditions.
+
+### ffmpeg Buffer Mode
+
+Controls how aggressively ffmpeg buffers the input. Only applies when the pipeline routes through ffmpeg (DRM or fMP4 sources).
+
+| Mode | Settings | Latency | Use When |
+|---|---|---|---|
+| `default` | ffmpeg defaults (5s analyze, 5MB probe) | Higher (+2-5s) | Unreliable networks, VOD sources |
+| `low_latency` | `nobuffer`, `low_delay`, 500ms analyze, 500KB probe | Lower (+0.5-1s) | Stable LAN, low-latency live |
+| `custom` | Set `ffmpeg_analyzeduration` and `ffmpeg_probesize` individually | Tunable | Fine-grained control |
+
+```toml
+[tuning]
+ffmpeg_buffer_mode = "low_latency"
+
+# Or for custom values (microseconds / bytes):
+# ffmpeg_buffer_mode = "custom"
+# ffmpeg_analyzeduration = 1000000    # 1 second
+# ffmpeg_probesize = 1000000          # 1 MB
+```
+
+**Via API:**
+```bash
+curl -X POST http://localhost:8080/api/v1/pipelines \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_url": "http://origin.example.com/live/index.m3u8",
+    "ffmpeg_buffer_mode": "low_latency"
+  }'
+```
+
+### Real-Time Throttle (`-re` flag)
+
+| Setting | Behavior | Use When |
+|---|---|---|
+| `true` (default) | ffmpeg paces output to match source timing | Live sources |
+| `false` | ffmpeg outputs as fast as possible | VOD-as-live, offline processing |
+
+```toml
+[tuning]
+ffmpeg_realtime = false    # disable for VOD processing
+```
+
+### TSDuck Regulate Bitrate
+
+The regulate plugin paces TS output to a target bitrate. If your source bitrate varies, set this to the peak expected value. If set too low, output will stutter. If set too high, it bursts.
+
+```toml
+[tsduck]
+output_bitrate = 40000000    # 40 Mbps (used by default)
+
+[tuning]
+# Override regulate bitrate independently of output_bitrate:
+# regulate_bitrate = 50000000
+```
+
+### SRT Latency
+
+Controls the SRT send buffer. Higher values tolerate more packet loss and jitter but add delay.
+
+| Value | Behavior | Use When |
+|---|---|---|
+| 50-100ms | Minimal delay, sensitive to loss | Clean LAN |
+| 200ms (default) | Balanced | LAN/WAN |
+| 500-2000ms | Resilient to loss/jitter | Internet, satellite uplinks |
+
+```toml
+[tsduck]
+srt_latency = 200
+```
+
+### PTS Calibration Delay
+
+When the pipeline routes through ffmpeg, PTS calibration probes the output to measure timestamp offset. The delay controls how long to wait before the first probe.
+
+| Value | Tradeoff |
+|---|---|
+| 5s | Calibrate faster, may fail if pipeline is slow to start |
+| 10s (default) | Reliable for most sources |
+| 20s+ | For very slow sources or high-latency networks |
+
+```toml
+[tuning]
+calibration_delay_s = 10.0
+```
+
+### Latency Budget Summary
+
+For a typical live HLS source with 6-second segments going through the ffmpeg path:
+
+| Component | Default Latency | With `low_latency` |
+|---|---|---|
+| HLS segment duration | 6.0s | 6.0s |
+| ffmpeg buffer/analyze | 2-5s | 0.5-1s |
+| ffmpeg `-re` pacing | ~1 segment | ~1 segment |
+| TSDuck processing | <100ms | <100ms |
+| SRT latency (if used) | 200ms | 200ms |
+| **Total** | **~14-18s** | **~7-13s** |
+
+For low-latency HLS (2s segments, partial segments), the monitor automatically adapts its poll interval and the ffmpeg `low_latency` mode reduces the overall budget significantly.
 
 ## Output
 

@@ -317,10 +317,23 @@ class Pipeline:
         if poll_interval:
             monitor_cmd += ["--poll-interval", str(poll_interval)]
 
-        # Build env with DRM_KEY passed securely (not via CLI args)
+        # Build env with DRM_KEY and tuning params passed via env vars
         proc_env = os.environ.copy()
         if drm_key:
             proc_env["DRM_KEY"] = drm_key
+
+        # Tuning overrides via env (read by config_helper.py / launch_tsp.sh)
+        tuning_map = {
+            "ffmpeg_buffer_mode": "CFG_FFMPEG_BUFFER_MODE",
+            "ffmpeg_realtime": "CFG_FFMPEG_REALTIME",
+            "ffmpeg_analyzeduration": "CFG_FFMPEG_ANALYZEDURATION",
+            "ffmpeg_probesize": "CFG_FFMPEG_PROBESIZE",
+            "regulate_bitrate": "CFG_REGULATE_BITRATE",
+        }
+        for param_key, env_key in tuning_map.items():
+            val = params.get(param_key)
+            if val is not None:
+                proc_env[env_key] = str(val)
 
         # Store commands for restart capability
         self._tsp_cmd = tsp_cmd

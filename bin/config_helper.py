@@ -45,6 +45,12 @@ CONFIG_MAP = {
     ("drm", "iv"): "CFG_DRM_IV",
     ("logging", "log_dir"): "CFG_LOG_DIR",
     ("logging", "level"): "CFG_LOG_LEVEL",
+    ("tuning", "ffmpeg_buffer_mode"): "CFG_FFMPEG_BUFFER_MODE",
+    ("tuning", "ffmpeg_analyzeduration"): "CFG_FFMPEG_ANALYZEDURATION",
+    ("tuning", "ffmpeg_probesize"): "CFG_FFMPEG_PROBESIZE",
+    ("tuning", "ffmpeg_realtime"): "CFG_FFMPEG_REALTIME",
+    ("tuning", "regulate_bitrate"): "CFG_REGULATE_BITRATE",
+    ("tuning", "calibration_delay_s"): "CFG_CALIBRATION_DELAY",
 }
 
 
