@@ -228,12 +228,13 @@ class ManifestMonitor:
         self._calibration_delay = config["scte35"].get(
             "calibration_delay_s", 10.0
         )
-        self._calibration_retries = config["scte35"].get(
+        self._calibration_warn_after = config["scte35"].get(
             "calibration_retries", 3
         )
         self._calibration_enabled = config["scte35"].get(
             "calibration_enabled", True
         )
+        self._calibration_attempts = 0
         self._start_time: float | None = None
 
         # DRM detection state
@@ -487,7 +488,15 @@ class ManifestMonitor:
 
         probed_pts = self._probe_actual_pts(playlist)
         if probed_pts is None:
-            self.logger.debug("PTS calibration: probe returned None, will retry")
+            self._calibration_attempts += 1
+            if self._calibration_attempts >= self._calibration_warn_after:
+                self.logger.warning(
+                    f"PTS calibration: probe failed {self._calibration_attempts} times. "
+                    f"Pipeline may not be producing output. "
+                    f"Check tsp.log for errors."
+                )
+            else:
+                self.logger.debug("PTS calibration: probe returned None, will retry")
             return
 
         old_base = self.pts_base

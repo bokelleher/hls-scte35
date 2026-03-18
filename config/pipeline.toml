@@ -33,7 +33,7 @@ mode = "auto_detect"
 # PTS calibration: measure actual output PTS to correct for ffmpeg transmux offset
 calibration_enabled = true
 calibration_delay_s = 10.0    # seconds to wait before first probe (let pipeline produce output)
-calibration_retries = 3       # unused currently, reserved for future retry logic
+calibration_retries = 3       # warn in logs after this many failed probe attempts
 
 [tsduck]
 # Output mode: "udp", "srt", "file"
