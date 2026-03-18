@@ -85,24 +85,32 @@ python3 ./bin/manifest_monitor.py --source-url http://example.com/live/index.m3u
 
 ### Option 3: REST API
 
+The API supports multiple concurrent pipelines, each with isolated inject dirs, logs, and output files.
+
 ```bash
 # Start the API server
 python3 ./bin/api_server.py --port 8080
 
-# Start a pipeline via HTTP
-curl -X POST http://localhost:8080/api/v1/pipeline \
+# Start a pipeline — returns an ID
+curl -X POST http://localhost:8080/api/v1/pipelines \
   -H "Content-Type: application/json" \
   -d '{
     "source_url": "http://example.com/live/index.m3u8",
-    "output_mode": "file",
-    "output_file": "/tmp/output.ts"
+    "output_mode": "file"
   }'
+# => {"id": "a1b2c3d4", "state": "running", ...}
 
-# Check status
-curl http://localhost:8080/api/v1/pipeline/status
+# List all running pipelines
+curl http://localhost:8080/api/v1/pipelines
 
-# Stop the pipeline
-curl -X DELETE http://localhost:8080/api/v1/pipeline
+# Check a specific pipeline
+curl http://localhost:8080/api/v1/pipelines/a1b2c3d4
+
+# Stop a specific pipeline
+curl -X DELETE http://localhost:8080/api/v1/pipelines/a1b2c3d4
+
+# Stop all pipelines
+curl -X DELETE http://localhost:8080/api/v1/pipelines
 ```
 
 ## REST API Reference
@@ -110,11 +118,15 @@ curl -X DELETE http://localhost:8080/api/v1/pipeline
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/v1/health` | Health check |
-| `POST` | `/api/v1/pipeline` | Start a pipeline |
-| `DELETE` | `/api/v1/pipeline` | Stop the running pipeline |
-| `GET` | `/api/v1/pipeline/status` | Get pipeline status |
+| `POST` | `/api/v1/pipelines` | Create and start a new pipeline |
+| `GET` | `/api/v1/pipelines` | List all pipelines |
+| `GET` | `/api/v1/pipelines/<id>` | Get a specific pipeline's status |
+| `DELETE` | `/api/v1/pipelines/<id>` | Stop and remove a specific pipeline |
+| `DELETE` | `/api/v1/pipelines` | Stop and remove all pipelines |
 
-### POST /api/v1/pipeline
+Legacy single-pipeline endpoints (`/api/v1/pipeline`) are still supported for backwards compatibility.
+
+### POST /api/v1/pipelines
 
 Request body (JSON):
 
@@ -181,7 +193,7 @@ python3 ./bin/manifest_monitor.py --source-url http://origin.example.com/live/in
 
 **API:**
 ```bash
-curl -X POST http://localhost:8080/api/v1/pipeline \
+curl -X POST http://localhost:8080/api/v1/pipelines \
   -H "Content-Type: application/json" \
   -d '{
     "source_url": "http://origin.example.com/live/index.m3u8",
@@ -205,7 +217,7 @@ python3 ./bin/manifest_monitor.py --source-url http://origin.example.com/live/in
 
 **API:**
 ```bash
-curl -X POST http://localhost:8080/api/v1/pipeline \
+curl -X POST http://localhost:8080/api/v1/pipelines \
   -H "Content-Type: application/json" \
   -d '{
     "source_url": "http://origin.example.com/live/index.m3u8",
@@ -238,7 +250,7 @@ srt_latency = 200
 
 **API:**
 ```bash
-curl -X POST http://localhost:8080/api/v1/pipeline \
+curl -X POST http://localhost:8080/api/v1/pipelines \
   -H "Content-Type: application/json" \
   -d '{
     "source_url": "http://origin.example.com/live/index.m3u8",
@@ -261,7 +273,7 @@ python3 ./bin/manifest_monitor.py --source-url http://origin.example.com/cmaf/ma
 
 **API:**
 ```bash
-curl -X POST http://localhost:8080/api/v1/pipeline \
+curl -X POST http://localhost:8080/api/v1/pipelines \
   -H "Content-Type: application/json" \
   -d '{
     "source_url": "http://origin.example.com/cmaf/master.m3u8",
@@ -287,7 +299,7 @@ python3 ./bin/manifest_monitor.py --source-url http://origin.example.com/live/in
 
 **API:**
 ```bash
-curl -X POST http://localhost:8080/api/v1/pipeline \
+curl -X POST http://localhost:8080/api/v1/pipelines \
   -H "Content-Type: application/json" \
   -d '{
     "source_url": "http://origin.example.com/live/index.m3u8",
@@ -299,19 +311,44 @@ curl -X POST http://localhost:8080/api/v1/pipeline \
   }'
 ```
 
-### Managing a running pipeline (API)
+### Multiple concurrent pipelines (API)
+
+Run several HLS sources through independent SCTE-35 pipelines simultaneously.
 
 ```bash
-# Check if a pipeline is running
-curl http://localhost:8080/api/v1/pipeline/status
-
-# Stop the current pipeline
-curl -X DELETE http://localhost:8080/api/v1/pipeline
-
-# Start a new one with different settings
-curl -X POST http://localhost:8080/api/v1/pipeline \
+# Start pipeline for channel 1
+curl -X POST http://localhost:8080/api/v1/pipelines \
   -H "Content-Type: application/json" \
-  -d '{"source_url": "http://backup.example.com/live/index.m3u8", "output_mode": "file"}'
+  -d '{
+    "source_url": "http://origin.example.com/ch1/index.m3u8",
+    "output_mode": "udp",
+    "udp_address": "239.1.1.1",
+    "udp_port": 5000
+  }'
+# => {"id": "a1b2c3d4", "state": "running", ...}
+
+# Start pipeline for channel 2
+curl -X POST http://localhost:8080/api/v1/pipelines \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_url": "http://origin.example.com/ch2/index.m3u8",
+    "output_mode": "udp",
+    "udp_address": "239.1.1.2",
+    "udp_port": 5000
+  }'
+# => {"id": "e5f6g7h8", "state": "running", ...}
+
+# List all running pipelines
+curl http://localhost:8080/api/v1/pipelines
+
+# Check a specific pipeline
+curl http://localhost:8080/api/v1/pipelines/a1b2c3d4
+
+# Stop channel 1 only
+curl -X DELETE http://localhost:8080/api/v1/pipelines/a1b2c3d4
+
+# Stop all pipelines
+curl -X DELETE http://localhost:8080/api/v1/pipelines
 ```
 
 ## Configuration
