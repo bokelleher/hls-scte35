@@ -86,6 +86,16 @@ class Pipeline:
                 output_dir.mkdir(parents=True, exist_ok=True)
                 params["output_file"] = str(output_dir / f"{self.id}.ts")
 
+        # Process supervision
+        self._max_restarts = 5
+        self._restart_window = 300.0  # seconds
+        self._restart_times: list[float] = []
+        self._supervisor_thread: threading.Thread | None = None
+        self._supervisor_stop = threading.Event()
+        self._tsp_cmd: list[str] = []
+        self._monitor_cmd: list[str] = []
+        self._proc_env: dict = {}
+
     @property
     def is_running(self) -> bool:
         return (
@@ -209,29 +219,117 @@ class Pipeline:
         if drm_key:
             proc_env["DRM_KEY"] = drm_key
 
+        # Store commands for restart capability
+        self._tsp_cmd = tsp_cmd
+        self._monitor_cmd = monitor_cmd
+        self._proc_env = proc_env
+
         try:
-            self.tsp_proc = subprocess.Popen(
-                tsp_cmd,
-                stdout=open(self.log_dir / "tsp.log", "a"),
-                stderr=subprocess.STDOUT,
-                preexec_fn=os.setsid,
-                env=proc_env,
-            )
-            self.monitor_proc = subprocess.Popen(
-                monitor_cmd,
-                stdout=open(self.log_dir / "monitor.log", "a"),
-                stderr=subprocess.STDOUT,
-                preexec_fn=os.setsid,
-                env=proc_env,
-            )
+            self._launch_processes()
         except Exception as e:
             self.stop()
             raise RuntimeError(f"Failed to start pipeline: {e}")
 
         self._start_time = time.monotonic()
+
+        # Start supervisor thread
+        self._supervisor_stop.clear()
+        self._supervisor_thread = threading.Thread(
+            target=self._supervise, daemon=True,
+            name=f"supervisor-{self.id}",
+        )
+        self._supervisor_thread.start()
+
         return self.status()
 
+    def _launch_processes(self):
+        """Launch tsp and monitor subprocesses."""
+        self.tsp_proc = subprocess.Popen(
+            self._tsp_cmd,
+            stdout=open(self.log_dir / "tsp.log", "a"),
+            stderr=subprocess.STDOUT,
+            preexec_fn=os.setsid,
+            env=self._proc_env,
+        )
+        self.monitor_proc = subprocess.Popen(
+            self._monitor_cmd,
+            stdout=open(self.log_dir / "monitor.log", "a"),
+            stderr=subprocess.STDOUT,
+            preexec_fn=os.setsid,
+            env=self._proc_env,
+        )
+
+    def _supervise(self):
+        """
+        Background thread that checks process health every 5 seconds
+        and restarts crashed processes.
+        """
+        logger = logging.getLogger(f"supervisor.{self.id}")
+
+        while not self._supervisor_stop.wait(timeout=5.0):
+            tsp_alive = self.tsp_proc and self.tsp_proc.poll() is None
+            mon_alive = self.monitor_proc and self.monitor_proc.poll() is None
+
+            if tsp_alive and mon_alive:
+                continue  # both healthy
+
+            if self._supervisor_stop.is_set():
+                break  # intentional shutdown
+
+            # Check restart budget
+            now = time.monotonic()
+            self._restart_times = [
+                t for t in self._restart_times
+                if now - t < self._restart_window
+            ]
+            if len(self._restart_times) >= self._max_restarts:
+                logger.error(
+                    "Pipeline %s: max restarts (%d in %.0fs) exceeded, giving up",
+                    self.id, self._max_restarts, self._restart_window,
+                )
+                break
+
+            # Restart crashed processes
+            if not tsp_alive and self.tsp_proc:
+                rc = self.tsp_proc.returncode
+                logger.warning(
+                    "Pipeline %s: tsp exited (rc=%s), restarting", self.id, rc
+                )
+                try:
+                    self.tsp_proc = subprocess.Popen(
+                        self._tsp_cmd,
+                        stdout=open(self.log_dir / "tsp.log", "a"),
+                        stderr=subprocess.STDOUT,
+                        preexec_fn=os.setsid,
+                        env=self._proc_env,
+                    )
+                    self._restart_times.append(now)
+                except Exception as e:
+                    logger.error("Pipeline %s: tsp restart failed: %s", self.id, e)
+
+            if not mon_alive and self.monitor_proc:
+                rc = self.monitor_proc.returncode
+                logger.warning(
+                    "Pipeline %s: monitor exited (rc=%s), restarting", self.id, rc
+                )
+                try:
+                    self.monitor_proc = subprocess.Popen(
+                        self._monitor_cmd,
+                        stdout=open(self.log_dir / "monitor.log", "a"),
+                        stderr=subprocess.STDOUT,
+                        preexec_fn=os.setsid,
+                        env=self._proc_env,
+                    )
+                    self._restart_times.append(now)
+                except Exception as e:
+                    logger.error("Pipeline %s: monitor restart failed: %s", self.id, e)
+
     def stop(self) -> list[str]:
+        # Signal supervisor to stop first
+        self._supervisor_stop.set()
+        if self._supervisor_thread and self._supervisor_thread.is_alive():
+            self._supervisor_thread.join(timeout=10)
+
         stopped = []
         for name, proc in [("monitor", self.monitor_proc), ("tsp", self.tsp_proc)]:
             if proc and proc.poll() is None:

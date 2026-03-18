@@ -166,9 +166,40 @@ echo "  Bitrate:     $OUTPUT_BITRATE bps"
 echo "  Inject file: $INJECT_FILE"
 echo "  DRM mode:    $DRM_MODE"
 
-# --- Determine input mode: direct HLS or ffmpeg decrypt ---
+# --- Detect fMP4 segments (EXT-X-MAP in media playlist) ---
+detect_fmp4() {
+    local url="$1"
+    local manifest
+    manifest=$(curl -sf --max-time 10 "$url" 2>/dev/null) || return 1
+
+    # If master playlist, follow the first rendition
+    if echo "$manifest" | grep -q "^#EXT-X-STREAM-INF"; then
+        local rendition
+        rendition=$(echo "$manifest" | grep -v "^#" | grep -v "^$" | head -1)
+        # Resolve relative URL
+        if [[ "$rendition" != http* ]]; then
+            local base
+            base="${url%/*}"
+            rendition="${base}/${rendition}"
+        fi
+        manifest=$(curl -sf --max-time 10 "$rendition" 2>/dev/null) || return 1
+    fi
+
+    # Check for EXT-X-MAP (indicates fMP4/CMAF segments)
+    echo "$manifest" | grep -q "^#EXT-X-MAP"
+}
+
+# --- Determine input mode: direct HLS or ffmpeg ---
 USE_FFMPEG=false
 FFMPEG_ARGS=()
+
+# Auto-detect fMP4 when DRM is not already forcing ffmpeg
+if [ "$DRM_MODE" = "none" ] || [ -z "$DRM_MODE" ]; then
+    if detect_fmp4 "$SOURCE_URL"; then
+        USE_FFMPEG=true
+        echo "  Segments:    fMP4/CMAF (auto-detected via EXT-X-MAP)"
+    fi
+fi
 
 case "$DRM_MODE" in
     aes128)

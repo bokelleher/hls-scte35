@@ -2,3 +2,4 @@ flask>=3.0.0
 m3u8>=6.0.0
 requests>=2.31.0
 threefive>=3.0.0
+pytest>=8.0.0

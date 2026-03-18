@@ -10,6 +10,9 @@ logs/
 output/
 test-source/
 inject/splice.xml
+inject/splice.bin
+inject/*/
+.pytest_cache/
 
 # IDE
 .vscode/
