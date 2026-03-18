@@ -1,6 +1,6 @@
 {
     "dashboard": {
-        "title": "hls-scte35 Pipeline",
+        "title": "hls-scte35 Pipeline v2",
         "tags": [
             "hls",
             "scte35",
@@ -162,7 +162,7 @@
             },
             {
                 "id": 5,
-                "title": "SCTE-35 Events Detected (total)",
+                "title": "SCTE-35 Events Detected",
                 "type": "timeseries",
                 "gridPos": {
                     "h": 8,
@@ -172,7 +172,7 @@
                 },
                 "targets": [
                     {
-                        "expr": "scte35_events_detected_total",
+                        "expr": "increase(scte35_events_detected_total[1m])",
                         "legendFormat": "{{type}}",
                         "refId": "A"
                     }
@@ -184,20 +184,23 @@
                 "fieldConfig": {
                     "defaults": {
                         "custom": {
-                            "fillOpacity": 30,
-                            "stacking": {
-                                "mode": "none"
-                            },
-                            "drawStyle": "steppedLine",
-                            "pointSize": 8,
-                            "showPoints": "always"
-                        }
-                    }
+                            "drawStyle": "bars",
+                            "fillOpacity": 60,
+                            "lineWidth": 0
+                        },
+                        "decimals": 0
+                    },
+                    "overrides": []
+                },
+                "options": {
+                    "orientation": "horizontal",
+                    "barWidth": 0.8,
+                    "groupWidth": 0.7
                 }
             },
             {
                 "id": 6,
-                "title": "SCTE-35 Events Injected (total)",
+                "title": "SCTE-35 Events Injected",
                 "type": "timeseries",
                 "gridPos": {
                     "h": 8,
@@ -207,7 +210,7 @@
                 },
                 "targets": [
                     {
-                        "expr": "scte35_events_injected_total",
+                        "expr": "increase(scte35_events_injected_total[1m])",
                         "legendFormat": "{{format}}",
                         "refId": "A"
                     }
@@ -219,15 +222,18 @@
                 "fieldConfig": {
                     "defaults": {
                         "custom": {
-                            "fillOpacity": 30,
-                            "stacking": {
-                                "mode": "none"
-                            },
-                            "drawStyle": "steppedLine",
-                            "pointSize": 8,
-                            "showPoints": "always"
-                        }
-                    }
+                            "drawStyle": "bars",
+                            "fillOpacity": 60,
+                            "lineWidth": 0
+                        },
+                        "decimals": 0
+                    },
+                    "overrides": []
+                },
+                "options": {
+                    "orientation": "horizontal",
+                    "barWidth": 0.8,
+                    "groupWidth": 0.7
                 }
             },
             {
@@ -592,7 +598,33 @@
                     }
                 }
             }
-        ]
+        ],
+        "annotations": {
+            "list": [
+                {
+                    "name": "SCTE-35 Events",
+                    "datasource": {
+                        "type": "grafana",
+                        "uid": "-- Grafana --"
+                    },
+                    "enable": true,
+                    "hide": false,
+                    "iconColor": "orange",
+                    "type": "tags",
+                    "tags": [
+                        "scte35"
+                    ],
+                    "limit": 50,
+                    "filter": {
+                        "ids": [
+                            5,
+                            6
+                        ],
+                        "exclude": false
+                    }
+                }
+            ]
+        }
     },
     "overwrite": true
 }
