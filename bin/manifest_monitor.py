@@ -221,6 +221,12 @@ class ManifestMonitor:
         # Graceful shutdown
         self._running = True
 
+        # Grafana annotations for exact-time event markers
+        grafana_config = config.get("grafana", {})
+        self._grafana_url = grafana_config.get("url")  # e.g. "http://localhost:3000"
+        self._grafana_auth = grafana_config.get("auth")  # e.g. "admin:admin" or API key
+        self._grafana_enabled = self._grafana_url is not None
+
         # Track PTS baseline from PROGRAM-DATE-TIME
         self.pdt_base: datetime | None = None
         self.pts_base: int = 0
@@ -306,6 +312,30 @@ class ManifestMonitor:
             "keyformat": self.drm_detected.get("keyformat"),
             "key_rotation_count": self._drm_key_rotation_count,
         }
+
+    def _push_annotation(self, text: str, tags: list[str]):
+        """Push an annotation to Grafana for exact-time event marking."""
+        if not self._grafana_enabled:
+            return
+        try:
+            url = f"{self._grafana_url}/api/annotations"
+            headers = {"Content-Type": "application/json"}
+            if self._grafana_auth and ":" in self._grafana_auth:
+                # Basic auth (user:pass)
+                import base64 as b64
+                encoded = b64.b64encode(self._grafana_auth.encode()).decode()
+                headers["Authorization"] = f"Basic {encoded}"
+            elif self._grafana_auth:
+                # Bearer token / API key
+                headers["Authorization"] = f"Bearer {self._grafana_auth}"
+            payload = {
+                "text": text,
+                "tags": tags,
+                "time": int(time.time() * 1000),
+            }
+            requests.post(url, json=payload, headers=headers, timeout=2)
+        except Exception as e:
+            self.logger.debug(f"Grafana annotation failed: {e}")
 
     def _next_event_id(self) -> int:
         eid = self.event_id
@@ -533,6 +563,10 @@ class ManifestMonitor:
             f"duration={dur}s media_seq={media_sequence}"
         )
         prom.inc("scte35_events_detected_total", labels={"type": "cue_out"})
+        self._push_annotation(
+            f"CUE-OUT: event_id={event_id} duration={dur}s",
+            ["scte35", "cue_out"],
+        )
 
         xml = build_splice_insert_xml(
             event_id=event_id,
@@ -554,6 +588,10 @@ class ManifestMonitor:
             f"CUE-IN detected: event_id={event_id} media_seq={media_sequence}"
         )
         prom.inc("scte35_events_detected_total", labels={"type": "cue_in"})
+        self._push_annotation(
+            f"CUE-IN: event_id={event_id}",
+            ["scte35", "cue_in"],
+        )
 
         xml = build_splice_insert_xml(
             event_id=event_id,
@@ -592,6 +630,10 @@ class ManifestMonitor:
             f"raw_len={len(raw_bytes) if raw_bytes else 0}"
         )
         prom.inc("scte35_events_detected_total", labels={"type": cmd_name})
+        self._push_annotation(
+            f"DATERANGE {dr_id}: {cmd_name}",
+            ["scte35", cmd_name, "daterange"],
+        )
 
         if decoded.get("error"):
             self.logger.warning(

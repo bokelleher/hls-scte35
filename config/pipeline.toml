@@ -115,6 +115,12 @@ calibration_delay_s = 10.0
 #   Medium (200ms):  good balance for LAN/WAN (default)
 #   High (500-2000ms): resilient to packet loss/jitter over internet
 
+[grafana]
+# Push SCTE-35 event annotations to Grafana for exact-time markers on dashboards.
+# Leave url commented out to disable.
+url = "http://localhost:3000"
+auth = "admin:admin"       # "user:pass" for basic auth, or a Grafana API key
+
 [logging]
 log_dir = "/opt/hls-scte35/logs"
 splice_log = "splice.log"
