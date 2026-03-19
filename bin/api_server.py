@@ -578,6 +578,14 @@ def create_app(config_path: str) -> Flask:
 
     def _collect_ffmpeg_metrics():
         """Scan running ffmpeg processes and export metrics by reason (drm/fmp4)."""
+        # Build a lookup: source_url -> drm_mode from active pipelines
+        drm_modes = {}
+        for p in registry.list_all():
+            url = p.get("config", {}).get("source_url", "")
+            mode = p.get("config", {}).get("drm_mode", "none")
+            if url:
+                drm_modes[url] = mode
+
         ffmpeg_count = {"drm": 0, "fmp4": 0, "unknown": 0}
         ffmpeg_threads = {"drm": 0, "fmp4": 0, "unknown": 0}
         try:
@@ -588,13 +596,18 @@ def create_app(config_path: str) -> Flask:
                         cmdline = f.read().decode("utf-8", errors="replace")
                     if "ffmpeg" not in cmdline:
                         continue
-                    # Determine reason from cmdline
+                    # Determine reason: check explicit key flag first,
+                    # then correlate source URL with pipeline drm_mode
                     if "-decryption_key" in cmdline:
                         reason = "drm"
-                    elif "mpegts" in cmdline:
-                        reason = "fmp4"  # fMP4 transmux to TS
                     else:
-                        reason = "unknown"
+                        reason = "fmp4"  # default for ffmpeg transmux
+                        # Check if any pipeline with DRM owns this ffmpeg
+                        for url, mode in drm_modes.items():
+                            if url.replace("\x00", "") in cmdline.replace("\x00", ""):
+                                if mode in ("auto", "aes128"):
+                                    reason = "drm"
+                                break
                     ffmpeg_count[reason] += 1
                     # Count threads
                     pid = proc_dir.split("/")[2]

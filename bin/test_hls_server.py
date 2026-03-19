@@ -33,10 +33,17 @@ class HLSHandler(SimpleHTTPRequestHandler):
     break_duration = 30.0  # seconds of ad break
     signal_style = "cue_tags"  # "cue_tags" or "daterange"
     segment_format = "ts"  # "ts" or "fmp4"
+    drm_enabled = False
+    # Fixed test key: 00112233445566778899aabbccddeeff
+    drm_key = bytes.fromhex("00112233445566778899aabbccddeeff")
+    drm_iv = bytes.fromhex("00000000000000000000000000000000")
+    server_port = 8899
 
     def do_GET(self):
         if self.path == "/live/playlist.m3u8":
             self._serve_playlist()
+        elif self.path == "/live/key.bin":
+            self._serve_drm_key()
         elif self.path == "/live/init.mp4":
             self._serve_init_segment()
         elif self.path.startswith("/live/seg_") and self.path.endswith(".m4s"):
@@ -65,6 +72,15 @@ class HLSHandler(SimpleHTTPRequestHandler):
         # fMP4: add EXT-X-MAP for init segment
         if self.segment_format == "fmp4":
             lines.append('#EXT-X-MAP:URI="init.mp4"')
+
+        # DRM: add EXT-X-KEY for AES-128
+        if self.drm_enabled:
+            iv_hex = self.drm_iv.hex()
+            lines.append(
+                f'#EXT-X-KEY:METHOD=AES-128,'
+                f'URI="http://localhost:{self.server_port}/live/key.bin",'
+                f'IV=0x{iv_hex}'
+            )
 
         # Break math: ad break every N segments
         break_segs = int(self.break_duration / self.segment_duration)
@@ -129,6 +145,14 @@ class HLSHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", len(body))
         self.end_headers()
         self.wfile.write(body)
+
+    def _serve_drm_key(self):
+        """Serve the raw 16-byte AES key (simulates a key server)."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", 16)
+        self.end_headers()
+        self.wfile.write(self.drm_key)
 
     def _serve_init_segment(self):
         """Serve a minimal fMP4 init segment (ftyp + moov)."""
@@ -346,6 +370,9 @@ def main():
     parser.add_argument("--segment-format", choices=["ts", "fmp4"],
                         default="ts",
                         help="Segment format: ts (MPEG-TS) or fmp4 (CMAF)")
+    parser.add_argument("--drm", action="store_true", default=False,
+                        help="Enable AES-128 DRM with test key "
+                             "(key=00112233445566778899aabbccddeeff)")
     args = parser.parse_args()
 
     # fMP4 requires daterange signaling (CUE tags are TS-only convention)
@@ -358,6 +385,8 @@ def main():
     HLSHandler.break_duration = args.break_duration
     HLSHandler.signal_style = args.signal_style
     HLSHandler.segment_format = args.segment_format
+    HLSHandler.drm_enabled = args.drm
+    HLSHandler.server_port = args.port
 
     server = HTTPServer(("0.0.0.0", args.port), HLSHandler)
     print(
@@ -366,7 +395,8 @@ def main():
         f"  Break every:      {args.break_interval} segments\n"
         f"  Break duration:   {args.break_duration}s\n"
         f"  Signal style:     {args.signal_style}\n"
-        f"  Segment format:   {args.segment_format}"
+        f"  Segment format:   {args.segment_format}\n"
+        f"  DRM:              {'AES-128 (key=00112233...eeff)' if args.drm else 'none'}"
     )
     server.serve_forever()
 
