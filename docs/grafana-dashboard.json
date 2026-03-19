@@ -172,9 +172,19 @@
                 },
                 "targets": [
                     {
-                        "expr": "vector(0)",
-                        "legendFormat": "__auto",
+                        "expr": "increase(scte35_events_detected_total{type=\"cue_out\"}[30s])",
+                        "legendFormat": "CUE-OUT",
                         "refId": "A"
+                    },
+                    {
+                        "expr": "increase(scte35_events_detected_total{type=\"cue_in\"}[30s])",
+                        "legendFormat": "CUE-IN",
+                        "refId": "B"
+                    },
+                    {
+                        "expr": "increase(scte35_events_detected_total{type=\"splice_insert\"}[30s])",
+                        "legendFormat": "DATERANGE",
+                        "refId": "C"
                     }
                 ],
                 "datasource": {
@@ -185,25 +195,70 @@
                     "defaults": {
                         "custom": {
                             "drawStyle": "line",
-                            "lineWidth": 0,
+                            "lineWidth": 1,
                             "fillOpacity": 0,
-                            "showPoints": "never",
-                            "axisPlacement": "hidden"
-                        },
-                        "color": {
-                            "mode": "fixed",
-                            "fixedColor": "transparent"
-                        },
-                        "noValue": " "
+                            "pointSize": 5,
+                            "showPoints": "always",
+                            "stacking": {
+                                "mode": "none"
+                            }
+                        }
                     },
-                    "overrides": []
+                    "overrides": [
+                        {
+                            "matcher": {
+                                "id": "byName",
+                                "options": "CUE-OUT"
+                            },
+                            "properties": [
+                                {
+                                    "id": "color",
+                                    "value": {
+                                        "mode": "fixed",
+                                        "fixedColor": "red"
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "matcher": {
+                                "id": "byName",
+                                "options": "CUE-IN"
+                            },
+                            "properties": [
+                                {
+                                    "id": "color",
+                                    "value": {
+                                        "mode": "fixed",
+                                        "fixedColor": "green"
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "matcher": {
+                                "id": "byName",
+                                "options": "DATERANGE"
+                            },
+                            "properties": [
+                                {
+                                    "id": "color",
+                                    "value": {
+                                        "mode": "fixed",
+                                        "fixedColor": "#5794F2"
+                                    }
+                                }
+                            ]
+                        }
+                    ]
                 },
                 "options": {
                     "legend": {
-                        "displayMode": "hidden"
+                        "displayMode": "list",
+                        "placement": "bottom"
                     },
                     "tooltip": {
-                        "mode": "none"
+                        "mode": "multi"
                     }
                 }
             },
@@ -219,9 +274,14 @@
                 },
                 "targets": [
                     {
-                        "expr": "vector(0)",
-                        "legendFormat": "__auto",
+                        "expr": "increase(scte35_events_injected_total{format=\"xml\"}[30s])",
+                        "legendFormat": "XML",
                         "refId": "A"
+                    },
+                    {
+                        "expr": "increase(scte35_events_injected_total{format=\"binary\"}[30s])",
+                        "legendFormat": "Binary",
+                        "refId": "B"
                     }
                 ],
                 "datasource": {
@@ -232,25 +292,55 @@
                     "defaults": {
                         "custom": {
                             "drawStyle": "line",
-                            "lineWidth": 0,
+                            "lineWidth": 1,
                             "fillOpacity": 0,
-                            "showPoints": "never",
-                            "axisPlacement": "hidden"
-                        },
-                        "color": {
-                            "mode": "fixed",
-                            "fixedColor": "transparent"
-                        },
-                        "noValue": " "
+                            "pointSize": 5,
+                            "showPoints": "always",
+                            "stacking": {
+                                "mode": "none"
+                            }
+                        }
                     },
-                    "overrides": []
+                    "overrides": [
+                        {
+                            "matcher": {
+                                "id": "byName",
+                                "options": "XML"
+                            },
+                            "properties": [
+                                {
+                                    "id": "color",
+                                    "value": {
+                                        "mode": "fixed",
+                                        "fixedColor": "green"
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "matcher": {
+                                "id": "byName",
+                                "options": "Binary"
+                            },
+                            "properties": [
+                                {
+                                    "id": "color",
+                                    "value": {
+                                        "mode": "fixed",
+                                        "fixedColor": "#5794F2"
+                                    }
+                                }
+                            ]
+                        }
+                    ]
                 },
                 "options": {
                     "legend": {
-                        "displayMode": "hidden"
+                        "displayMode": "list",
+                        "placement": "bottom"
                     },
                     "tooltip": {
-                        "mode": "none"
+                        "mode": "multi"
                     }
                 }
             },
@@ -480,7 +570,7 @@
             },
             {
                 "id": 13,
-                "title": "Dedup Set Sizes",
+                "title": "Dedupe Set Sizes",
                 "type": "timeseries",
                 "gridPos": {
                     "h": 8,
@@ -651,30 +741,7 @@
             }
         ],
         "annotations": {
-            "list": [
-                {
-                    "name": "SCTE-35 Events",
-                    "datasource": {
-                        "type": "grafana",
-                        "uid": "-- Grafana --"
-                    },
-                    "enable": true,
-                    "hide": false,
-                    "iconColor": "orange",
-                    "type": "tags",
-                    "tags": [
-                        "scte35"
-                    ],
-                    "limit": 50,
-                    "filter": {
-                        "ids": [
-                            5,
-                            6
-                        ],
-                        "exclude": false
-                    }
-                }
-            ]
+            "list": []
         }
     },
     "overwrite": true
