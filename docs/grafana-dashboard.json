@@ -172,8 +172,8 @@
                 },
                 "targets": [
                     {
-                        "expr": "increase(scte35_events_detected_total[1m])",
-                        "legendFormat": "{{type}}",
+                        "expr": "vector(0)",
+                        "legendFormat": "__auto",
                         "refId": "A"
                     }
                 ],
@@ -184,18 +184,27 @@
                 "fieldConfig": {
                     "defaults": {
                         "custom": {
-                            "drawStyle": "bars",
-                            "fillOpacity": 60,
-                            "lineWidth": 0
+                            "drawStyle": "line",
+                            "lineWidth": 0,
+                            "fillOpacity": 0,
+                            "showPoints": "never",
+                            "axisPlacement": "hidden"
                         },
-                        "decimals": 0
+                        "color": {
+                            "mode": "fixed",
+                            "fixedColor": "transparent"
+                        },
+                        "noValue": " "
                     },
                     "overrides": []
                 },
                 "options": {
-                    "orientation": "horizontal",
-                    "barWidth": 0.8,
-                    "groupWidth": 0.7
+                    "legend": {
+                        "displayMode": "hidden"
+                    },
+                    "tooltip": {
+                        "mode": "none"
+                    }
                 }
             },
             {
@@ -210,8 +219,8 @@
                 },
                 "targets": [
                     {
-                        "expr": "increase(scte35_events_injected_total[1m])",
-                        "legendFormat": "{{format}}",
+                        "expr": "vector(0)",
+                        "legendFormat": "__auto",
                         "refId": "A"
                     }
                 ],
@@ -222,18 +231,27 @@
                 "fieldConfig": {
                     "defaults": {
                         "custom": {
-                            "drawStyle": "bars",
-                            "fillOpacity": 60,
-                            "lineWidth": 0
+                            "drawStyle": "line",
+                            "lineWidth": 0,
+                            "fillOpacity": 0,
+                            "showPoints": "never",
+                            "axisPlacement": "hidden"
                         },
-                        "decimals": 0
+                        "color": {
+                            "mode": "fixed",
+                            "fixedColor": "transparent"
+                        },
+                        "noValue": " "
                     },
                     "overrides": []
                 },
                 "options": {
-                    "orientation": "horizontal",
-                    "barWidth": 0.8,
-                    "groupWidth": 0.7
+                    "legend": {
+                        "displayMode": "hidden"
+                    },
+                    "tooltip": {
+                        "mode": "none"
+                    }
                 }
             },
             {
@@ -510,8 +528,22 @@
                 },
                 "fieldConfig": {
                     "defaults": {
-                        "unit": "dtdurations"
-                    }
+                        "unit": "s",
+                        "color": {
+                            "mode": "fixed",
+                            "fixedColor": "green"
+                        },
+                        "thresholds": {
+                            "mode": "absolute",
+                            "steps": [
+                                {
+                                    "color": "green",
+                                    "value": null
+                                }
+                            ]
+                        }
+                    },
+                    "overrides": []
                 }
             },
             {
