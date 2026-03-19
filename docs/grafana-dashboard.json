@@ -25,7 +25,7 @@
                 },
                 "targets": [
                     {
-                        "expr": "pipeline_state",
+                        "expr": "pipeline_state{id=~\"$pipeline\"}",
                         "legendFormat": "{{id}}",
                         "refId": "A"
                     }
@@ -172,17 +172,17 @@
                 },
                 "targets": [
                     {
-                        "expr": "sum(increase(scte35_events_detected_total{type=\"cue_out\"}[30s]))",
+                        "expr": "sum(increase(scte35_events_detected_total{type=\"cue_out\",id=~\"$pipeline\"}[30s]))",
                         "legendFormat": "CUE-OUT",
                         "refId": "A"
                     },
                     {
-                        "expr": "sum(increase(scte35_events_detected_total{type=\"cue_in\"}[30s]))",
+                        "expr": "sum(increase(scte35_events_detected_total{type=\"cue_in\",id=~\"$pipeline\"}[30s]))",
                         "legendFormat": "CUE-IN",
                         "refId": "B"
                     },
                     {
-                        "expr": "sum(increase(scte35_events_detected_total{type=\"splice_insert\"}[30s]))",
+                        "expr": "sum(increase(scte35_events_detected_total{type=\"splice_insert\",id=~\"$pipeline\"}[30s]))",
                         "legendFormat": "DATERANGE",
                         "refId": "C"
                     }
@@ -274,12 +274,12 @@
                 },
                 "targets": [
                     {
-                        "expr": "sum(increase(scte35_events_injected_total{format=\"xml\"}[30s]))",
+                        "expr": "sum(increase(scte35_events_injected_total{format=\"xml\",id=~\"$pipeline\"}[30s]))",
                         "legendFormat": "XML",
                         "refId": "A"
                     },
                     {
-                        "expr": "sum(increase(scte35_events_injected_total{format=\"binary\"}[30s]))",
+                        "expr": "sum(increase(scte35_events_injected_total{format=\"binary\",id=~\"$pipeline\"}[30s]))",
                         "legendFormat": "Binary",
                         "refId": "B"
                     }
@@ -598,12 +598,12 @@
                 },
                 "targets": [
                     {
-                        "expr": "sum(seen_cues_size)",
+                        "expr": "sum(seen_cues_size{id=~\"$pipeline\"})",
                         "legendFormat": "Seen Cues",
                         "refId": "A"
                     },
                     {
-                        "expr": "sum(seen_raw_hashes_size)",
+                        "expr": "sum(seen_raw_hashes_size{id=~\"$pipeline\"})",
                         "legendFormat": "Raw Hashes",
                         "refId": "B"
                     }
@@ -973,6 +973,30 @@
         ],
         "annotations": {
             "list": []
+        },
+        "templating": {
+            "list": [
+                {
+                    "name": "pipeline",
+                    "type": "query",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "PBFA97CFB590B2093"
+                    },
+                    "query": "label_values(pipeline_state, id)",
+                    "refresh": 2,
+                    "includeAll": true,
+                    "multi": true,
+                    "allValue": ".*",
+                    "current": {
+                        "text": "All",
+                        "value": [
+                            "$__all"
+                        ]
+                    },
+                    "label": "Pipeline"
+                }
+            ]
         }
     },
     "overwrite": true
