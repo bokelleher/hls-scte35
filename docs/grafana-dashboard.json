@@ -431,7 +431,7 @@
                 },
                 "targets": [
                     {
-                        "expr": "pts_calibration_status",
+                        "expr": "max(pts_calibration_status)",
                         "legendFormat": "Status",
                         "refId": "A"
                     }
@@ -463,6 +463,14 @@
                         ]
                     },
                     "overrides": []
+                },
+                "options": {
+                    "reduceOptions": {
+                        "calcs": [
+                            "lastNotNull"
+                        ]
+                    },
+                    "graphMode": "area"
                 }
             },
             {
@@ -531,7 +539,7 @@
             {
                 "id": 12,
                 "title": "Calibration Attempts",
-                "type": "stat",
+                "type": "timeseries",
                 "gridPos": {
                     "h": 8,
                     "w": 4,
@@ -541,7 +549,7 @@
                 "targets": [
                     {
                         "expr": "pts_calibration_attempts_total",
-                        "legendFormat": "Attempts",
+                        "legendFormat": "{{id}}",
                         "refId": "A"
                     }
                 ],
@@ -551,21 +559,25 @@
                 },
                 "fieldConfig": {
                     "defaults": {
-                        "color": {
-                            "mode": "fixed",
-                            "fixedColor": "text"
+                        "custom": {
+                            "drawStyle": "line",
+                            "lineWidth": 1,
+                            "fillOpacity": 0,
+                            "pointSize": 5,
+                            "showPoints": "always"
                         },
-                        "thresholds": {
-                            "mode": "absolute",
-                            "steps": [
-                                {
-                                    "color": "text",
-                                    "value": null
-                                }
-                            ]
-                        }
+                        "decimals": 0
                     },
                     "overrides": []
+                },
+                "options": {
+                    "legend": {
+                        "displayMode": "list",
+                        "placement": "bottom"
+                    },
+                    "tooltip": {
+                        "mode": "multi"
+                    }
                 }
             },
             {
@@ -607,7 +619,7 @@
                 },
                 "targets": [
                     {
-                        "expr": "time() - process_start_time_seconds{job=\"hls-scte35\"}",
+                        "expr": "time() - process_start_time_seconds{id=\"\",job=\"hls-scte35\"}",
                         "legendFormat": "Uptime",
                         "refId": "A"
                     }
@@ -624,7 +636,6 @@
                             "fixedColor": "green"
                         },
                         "thresholds": {
-                            "mode": "absolute",
                             "steps": [
                                 {
                                     "color": "green",
@@ -634,6 +645,14 @@
                         }
                     },
                     "overrides": []
+                },
+                "options": {
+                    "reduceOptions": {
+                        "calcs": [
+                            "lastNotNull"
+                        ]
+                    },
+                    "graphMode": "area"
                 }
             },
             {
