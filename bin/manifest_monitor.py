@@ -462,7 +462,7 @@ class ManifestMonitor:
             for line in result.stdout.strip().splitlines():
                 line = line.strip()
                 if line and line != "N/A":
-                    return int(line)
+                    return int(line.rstrip(","))
         except (subprocess.TimeoutExpired, FileNotFoundError, ValueError) as e:
             self.logger.debug(f"PTS probe (file) failed: {e}")
         return None
@@ -487,7 +487,7 @@ class ManifestMonitor:
             for line in result.stdout.strip().splitlines():
                 line = line.strip()
                 if line and line != "N/A":
-                    return int(line)
+                    return int(line.rstrip(","))
         except (subprocess.TimeoutExpired, FileNotFoundError, ValueError) as e:
             self.logger.debug(f"PTS probe (segment) failed: {e}")
         return None

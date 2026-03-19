@@ -353,7 +353,8 @@
                                 }
                             }
                         ]
-                    }
+                    },
+                    "overrides": []
                 }
             },
             {
@@ -439,6 +440,24 @@
                 "datasource": {
                     "type": "prometheus",
                     "uid": "PBFA97CFB590B2093"
+                },
+                "fieldConfig": {
+                    "defaults": {
+                        "color": {
+                            "mode": "fixed",
+                            "fixedColor": "text"
+                        },
+                        "thresholds": {
+                            "mode": "absolute",
+                            "steps": [
+                                {
+                                    "color": "text",
+                                    "value": null
+                                }
+                            ]
+                        }
+                    },
+                    "overrides": []
                 }
             },
             {
