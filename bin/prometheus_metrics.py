@@ -145,25 +145,52 @@ class _MetricStore:
         metrics_dir = Path(directory)
         if not metrics_dir.is_dir():
             return
+
+        # Clear previously imported metrics to prevent stale data
+        # Only clear keys that look like they came from monitor imports
+        # (they have pipeline ID labels or are known monitor-exported metrics)
+        monitor_metrics = {
+            "manifest_poll_total", "scte35_events_detected_total",
+            "scte35_events_injected_total", "pts_calibration_attempts_total",
+            "pts_calibration_status", "seen_cues_size", "seen_raw_hashes_size",
+            "manifest_poll_duration_seconds", "drm_detected",
+        }
+        with self._lock:
+            for store in (self._counters, self._gauges):
+                stale = [k for k in store
+                         if k.split("{")[0].split("_count")[0].split("_sum")[0].split("_avg")[0]
+                         in monitor_metrics]
+                for k in stale:
+                    del store[k]
         for metrics_file in metrics_dir.glob("**/*.metrics.json"):
             try:
+                # Extract pipeline ID from path: inject/<id>/monitor.metrics.json
+                pipeline_id = metrics_file.parent.name
+
                 with open(metrics_file) as f:
                     data = json.load(f)
                 with self._lock:
                     for key, val in data.items():
                         if not isinstance(val, (int, float)):
                             continue
+                        # Inject pipeline ID label into the key
+                        if "{" in key:
+                            # Already has labels: add id
+                            labeled_key = key.replace("{", f'{{id="{pipeline_id}",', 1)
+                        else:
+                            labeled_key = f'{key}{{id="{pipeline_id}"}}'
+
                         # Merge: for counters use max (they only go up),
                         # for gauges use latest file value
                         name = key.split("{")[0].rstrip("_count").rstrip("_sum").rstrip("_avg")
                         if name in [n for n, (t, _) in self._meta.items() if t == "gauge"]:
-                            self._gauges[key] = val
+                            self._gauges[labeled_key] = val
                         else:
                             # Counter: take the max of current and imported
-                            if key in self._counters:
-                                self._counters[key] = max(self._counters[key], val)
+                            if labeled_key in self._counters:
+                                self._counters[labeled_key] = max(self._counters[labeled_key], val)
                             else:
-                                self._counters[key] = val
+                                self._counters[labeled_key] = val
             except (OSError, json.JSONDecodeError):
                 pass
 
