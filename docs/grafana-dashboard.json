@@ -475,7 +475,7 @@
             },
             {
                 "id": 10,
-                "title": "DRM Status",
+                "title": "DRM Pipelines",
                 "type": "stat",
                 "gridPos": {
                     "h": 4,
@@ -485,8 +485,8 @@
                 },
                 "targets": [
                     {
-                        "expr": "drm_detected",
-                        "legendFormat": "DRM",
+                        "expr": "sum(drm_detected)",
+                        "legendFormat": "DRM Count",
                         "refId": "A"
                     }
                 ],
@@ -496,22 +496,28 @@
                 },
                 "fieldConfig": {
                     "defaults": {
-                        "mappings": [
-                            {
-                                "type": "value",
-                                "options": {
-                                    "0": {
-                                        "text": "No DRM",
-                                        "color": "text"
-                                    },
-                                    "1": {
-                                        "text": "DRM Active",
-                                        "color": "orange"
-                                    }
+                        "color": {
+                            "mode": "fixed",
+                            "fixedColor": "orange"
+                        },
+                        "thresholds": {
+                            "steps": [
+                                {
+                                    "color": "green",
+                                    "value": null
                                 }
-                            }
+                            ]
+                        }
+                    },
+                    "overrides": []
+                },
+                "options": {
+                    "reduceOptions": {
+                        "calcs": [
+                            "lastNotNull"
                         ]
-                    }
+                    },
+                    "graphMode": "none"
                 }
             },
             {
