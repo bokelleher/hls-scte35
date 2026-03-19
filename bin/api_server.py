@@ -576,12 +576,53 @@ def create_app(config_path: str) -> Flask:
     def health():
         return jsonify({"status": "ok"})
 
+    def _collect_ffmpeg_metrics():
+        """Scan running ffmpeg processes and export metrics by reason (drm/fmp4)."""
+        ffmpeg_count = {"drm": 0, "fmp4": 0, "unknown": 0}
+        ffmpeg_threads = {"drm": 0, "fmp4": 0, "unknown": 0}
+        try:
+            import glob as globmod
+            for proc_dir in globmod.glob("/proc/[0-9]*/cmdline"):
+                try:
+                    with open(proc_dir, "rb") as f:
+                        cmdline = f.read().decode("utf-8", errors="replace")
+                    if "ffmpeg" not in cmdline:
+                        continue
+                    # Determine reason from cmdline
+                    if "-decryption_key" in cmdline:
+                        reason = "drm"
+                    elif "mpegts" in cmdline:
+                        reason = "fmp4"  # fMP4 transmux to TS
+                    else:
+                        reason = "unknown"
+                    ffmpeg_count[reason] += 1
+                    # Count threads
+                    pid = proc_dir.split("/")[2]
+                    try:
+                        tasks = len(os.listdir(f"/proc/{pid}/task"))
+                        ffmpeg_threads[reason] += tasks
+                    except (OSError, FileNotFoundError):
+                        pass
+                except (OSError, FileNotFoundError):
+                    continue
+        except Exception:
+            pass
+
+        for reason, count in ffmpeg_count.items():
+            prom.set("ffmpeg_processes", float(count),
+                     labels={"reason": reason})
+            prom.set("ffmpeg_threads", float(ffmpeg_threads[reason]),
+                     labels={"reason": reason})
+
     @app.route("/api/v1/metrics", methods=["GET"])
     @require_api_key
     def get_metrics():
         """Return pipeline metrics. Prometheus format if Accept header requests it."""
         # Import metrics from monitor subprocesses (cross-process aggregation)
         prom.import_from_directory(str(INSTALL_DIR / "inject"))
+
+        # Collect ffmpeg process/thread metrics
+        _collect_ffmpeg_metrics()
 
         # Update active pipeline count gauge
         prom.set("active_pipelines", float(len(registry.list_all())))

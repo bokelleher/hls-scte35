@@ -738,6 +738,212 @@
                         }
                     }
                 }
+            },
+            {
+                "id": 17,
+                "title": "ffmpeg Processes",
+                "type": "timeseries",
+                "gridPos": {
+                    "h": 8,
+                    "w": 12,
+                    "x": 0,
+                    "y": 40
+                },
+                "targets": [
+                    {
+                        "expr": "ffmpeg_processes{reason=\"drm\"}",
+                        "legendFormat": "DRM",
+                        "refId": "A"
+                    },
+                    {
+                        "expr": "ffmpeg_processes{reason=\"fmp4\"}",
+                        "legendFormat": "fMP4",
+                        "refId": "B"
+                    },
+                    {
+                        "expr": "ffmpeg_processes{reason=\"unknown\"}",
+                        "legendFormat": "Other",
+                        "refId": "C"
+                    }
+                ],
+                "datasource": {
+                    "type": "prometheus",
+                    "uid": "PBFA97CFB590B2093"
+                },
+                "fieldConfig": {
+                    "defaults": {
+                        "custom": {
+                            "drawStyle": "line",
+                            "lineWidth": 1,
+                            "fillOpacity": 20,
+                            "pointSize": 5,
+                            "showPoints": "always",
+                            "stacking": {
+                                "mode": "normal"
+                            }
+                        },
+                        "decimals": 0
+                    },
+                    "overrides": [
+                        {
+                            "matcher": {
+                                "id": "byName",
+                                "options": "DRM"
+                            },
+                            "properties": [
+                                {
+                                    "id": "color",
+                                    "value": {
+                                        "mode": "fixed",
+                                        "fixedColor": "orange"
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "matcher": {
+                                "id": "byName",
+                                "options": "fMP4"
+                            },
+                            "properties": [
+                                {
+                                    "id": "color",
+                                    "value": {
+                                        "mode": "fixed",
+                                        "fixedColor": "#5794F2"
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "matcher": {
+                                "id": "byName",
+                                "options": "Other"
+                            },
+                            "properties": [
+                                {
+                                    "id": "color",
+                                    "value": {
+                                        "mode": "fixed",
+                                        "fixedColor": "text"
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                },
+                "options": {
+                    "legend": {
+                        "displayMode": "list",
+                        "placement": "bottom"
+                    },
+                    "tooltip": {
+                        "mode": "multi"
+                    }
+                }
+            },
+            {
+                "id": 18,
+                "title": "ffmpeg Threads",
+                "type": "timeseries",
+                "gridPos": {
+                    "h": 8,
+                    "w": 12,
+                    "x": 12,
+                    "y": 40
+                },
+                "targets": [
+                    {
+                        "expr": "ffmpeg_threads{reason=\"drm\"}",
+                        "legendFormat": "DRM",
+                        "refId": "A"
+                    },
+                    {
+                        "expr": "ffmpeg_threads{reason=\"fmp4\"}",
+                        "legendFormat": "fMP4",
+                        "refId": "B"
+                    },
+                    {
+                        "expr": "ffmpeg_threads{reason=\"unknown\"}",
+                        "legendFormat": "Other",
+                        "refId": "C"
+                    }
+                ],
+                "datasource": {
+                    "type": "prometheus",
+                    "uid": "PBFA97CFB590B2093"
+                },
+                "fieldConfig": {
+                    "defaults": {
+                        "custom": {
+                            "drawStyle": "line",
+                            "lineWidth": 1,
+                            "fillOpacity": 20,
+                            "pointSize": 5,
+                            "showPoints": "always",
+                            "stacking": {
+                                "mode": "normal"
+                            }
+                        },
+                        "decimals": 0
+                    },
+                    "overrides": [
+                        {
+                            "matcher": {
+                                "id": "byName",
+                                "options": "DRM"
+                            },
+                            "properties": [
+                                {
+                                    "id": "color",
+                                    "value": {
+                                        "mode": "fixed",
+                                        "fixedColor": "orange"
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "matcher": {
+                                "id": "byName",
+                                "options": "fMP4"
+                            },
+                            "properties": [
+                                {
+                                    "id": "color",
+                                    "value": {
+                                        "mode": "fixed",
+                                        "fixedColor": "#5794F2"
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "matcher": {
+                                "id": "byName",
+                                "options": "Other"
+                            },
+                            "properties": [
+                                {
+                                    "id": "color",
+                                    "value": {
+                                        "mode": "fixed",
+                                        "fixedColor": "text"
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                },
+                "options": {
+                    "legend": {
+                        "displayMode": "list",
+                        "placement": "bottom"
+                    },
+                    "tooltip": {
+                        "mode": "multi"
+                    }
+                }
             }
         ],
         "annotations": {
