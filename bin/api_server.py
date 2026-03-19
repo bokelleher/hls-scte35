@@ -473,6 +473,12 @@ class Pipeline:
         self.tsp_proc = None
         self.monitor_proc = None
         self._start_time = None
+
+        # Clean up inject directory (prevents stale metrics)
+        import shutil
+        if self.inject_dir.exists():
+            shutil.rmtree(self.inject_dir, ignore_errors=True)
+
         return stopped
 
 
@@ -487,6 +493,22 @@ class PipelineRegistry:
         self.config_path = config_path
         self._pipelines: dict[str, Pipeline] = {}
         self._lock = threading.Lock()
+
+        # Clean orphaned inject dirs from previous runs
+        self._cleanup_orphans()
+
+    def _cleanup_orphans(self):
+        """Remove inject/log dirs from pipelines that no longer exist."""
+        import shutil
+        logger = logging.getLogger("registry")
+        inject_base = INSTALL_DIR / "inject"
+        if not inject_base.exists():
+            return
+        active_ids = set(self._pipelines.keys())
+        for child in inject_base.iterdir():
+            if child.is_dir() and child.name not in active_ids:
+                shutil.rmtree(child, ignore_errors=True)
+                logger.info("Cleaned orphaned inject dir: %s", child.name)
 
     def _generate_id(self) -> str:
         return uuid.uuid4().hex[:8]
