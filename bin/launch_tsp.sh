@@ -260,8 +260,8 @@ if [ "$USE_FFMPEG" = true ]; then
         -I file
         -P continuity
         -P pmt --add-pid "$SCTE35_PID"/0x86 --add-registration 0x43554549 --add-pid-registration "$SCTE35_PID"/0x43554549 --set-cue-type "$SCTE35_PID"/0
-        -P inject --pid "$SCTE35_PID" --xml --poll-files --stuffing --inter-packet 400 --repeat 3 "$INJECT_FILE"
-        -P inject --pid "$SCTE35_PID" --binary --poll-files --replace --inter-packet 400 --repeat 3 "$INJECT_BIN"
+        -P inject --pid "$SCTE35_PID" --xml --poll-files --inter-packet 400 --repeat 3 "$INJECT_FILE"
+        -P inject --pid "$SCTE35_PID" --binary --poll-files --replace --repeat 3 "$INJECT_BIN"
         -P tables --pid "$SCTE35_PID" --log --log-hexa-line --log-size 80
         -P regulate --bitrate "${REGULATE_BITRATE:-$OUTPUT_BITRATE}"
     )
@@ -272,8 +272,8 @@ else
         -I hls "$SOURCE_URL"
         -P continuity
         -P pmt --add-pid "$SCTE35_PID"/0x86 --add-registration 0x43554549 --add-pid-registration "$SCTE35_PID"/0x43554549 --set-cue-type "$SCTE35_PID"/0
-        -P inject --pid "$SCTE35_PID" --xml --poll-files --stuffing --inter-packet 400 --repeat 3 "$INJECT_FILE"
-        -P inject --pid "$SCTE35_PID" --binary --poll-files --replace --inter-packet 400 --repeat 3 "$INJECT_BIN"
+        -P inject --pid "$SCTE35_PID" --xml --poll-files --inter-packet 400 --repeat 3 "$INJECT_FILE"
+        -P inject --pid "$SCTE35_PID" --binary --poll-files --replace --repeat 3 "$INJECT_BIN"
         -P tables --pid "$SCTE35_PID" --log --log-hexa-line --log-size 80
         -P regulate --bitrate "${REGULATE_BITRATE:-$OUTPUT_BITRATE}"
     )

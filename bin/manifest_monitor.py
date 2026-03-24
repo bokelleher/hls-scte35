@@ -67,6 +67,102 @@ def load_config(path: str = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# SCTE-35 Binary Section Builder
+# ---------------------------------------------------------------------------
+
+def _crc32_mpeg(data: bytes) -> int:
+    """Compute MPEG-2 CRC-32 (polynomial 0x04C11DB7, no bit reversal)."""
+    crc = 0xFFFFFFFF
+    for byte in data:
+        for _ in range(8):
+            if (crc ^ (byte << 24)) & 0x80000000:
+                crc = ((crc << 1) ^ 0x04C11DB7) & 0xFFFFFFFF
+            else:
+                crc = (crc << 1) & 0xFFFFFFFF
+            byte = (byte << 1) & 0xFF
+    return crc
+
+
+def build_splice_insert_bin(
+    event_id: int,
+    pts_time: int | None,
+    duration_pts: int | None,
+    out_of_network: bool = True,
+    cancel: bool = False,
+    unique_program_id: int = 0,
+) -> bytes:
+    """
+    Build a binary SCTE-35 splice_information_table section containing
+    a splice_insert command. Returns a complete section including CRC-32.
+    """
+    # Build splice_insert command body
+    cmd = struct.pack(">I", event_id)  # splice_event_id (32 bits)
+
+    if cancel:
+        cmd += bytes([0xFF])  # splice_event_cancel_indicator=1 + 7 reserved (all 1)
+    else:
+        splice_immediate = pts_time is None
+
+        # Byte: cancel=0 + 7 reserved bits (all 1) = 0x7F
+        cmd += bytes([0x7F])
+
+        # Flags byte: out_of_network(1) + program_splice(1) + duration_flag(1)
+        #           + splice_immediate(1) + reserved(4, all 1)
+        flags = 0x0F  # reserved 4 bits
+        if out_of_network:
+            flags |= 0x80
+        flags |= 0x40      # program_splice_flag (always program-level)
+        if duration_pts is not None:
+            flags |= 0x20
+        if splice_immediate:
+            flags |= 0x10
+        cmd += bytes([flags])
+
+        if not splice_immediate and pts_time is not None:
+            # splice_time: time_specified_flag=1 + 6 reserved(1) + 33-bit PTS
+            pts_hi = (pts_time >> 32) & 0x01
+            pts_lo = pts_time & 0xFFFFFFFF
+            cmd += bytes([0xFE | pts_hi])
+            cmd += struct.pack(">I", pts_lo)
+
+        if duration_pts is not None:
+            # break_duration: auto_return=1 + 6 reserved(1) + 33-bit duration
+            dur_hi = (duration_pts >> 32) & 0x01
+            dur_lo = duration_pts & 0xFFFFFFFF
+            cmd += bytes([0xFE | dur_hi])
+            cmd += struct.pack(">I", dur_lo)
+
+        cmd += struct.pack(">H", unique_program_id)
+        cmd += bytes([0x00, 0x00])  # avail_num=0, avails_expected=0
+
+    # Build the full section (table_id=0xFC)
+    # protocol_version(8) + encrypted_packet(1) + encryption_algorithm(6)
+    # + pts_adjustment(33) = 8 + 40 = 48 bits = 6 bytes
+    header = bytes([0x00])                        # protocol_version=0
+    header += bytes([0x00, 0x00, 0x00, 0x00, 0x00])  # encrypted=0, enc_algo=0, pts_adj=0 (5 bytes = 40 bits)
+    header += bytes([0x00])                        # cw_index=0
+    # tier(12) + splice_command_length(12) = 24 bits = 3 bytes
+    cmd_len = len(cmd)
+    tier_and_len = (0xFFF << 12) | (cmd_len & 0xFFF)
+    header += struct.pack(">I", tier_and_len)[1:]  # 3 bytes
+    header += bytes([0x05])  # splice_command_type = splice_insert
+
+    # Descriptor loop length = 0
+    descriptor_loop = struct.pack(">H", 0)
+
+    payload = header + cmd + descriptor_loop
+
+    # section_length includes everything after the 3-byte section header up to end (incl CRC)
+    section_length = len(payload) + 4  # +4 for CRC-32
+    section_header = bytes([0xFC])
+    section_header += struct.pack(">H", 0x3000 | (section_length & 0x0FFF))
+
+    section_no_crc = section_header + payload
+    crc = _crc32_mpeg(section_no_crc)
+    return section_no_crc + struct.pack(">I", crc)
+
+
+# ---------------------------------------------------------------------------
 # SCTE-35 XML Builders (TSDuck v3.42 format)
 # ---------------------------------------------------------------------------
 
@@ -582,6 +678,16 @@ class ManifestMonitor:
         )
         self._queue_command(xml, f"CUE-OUT event_id={event_id}")
 
+        # Also queue as binary for reliable injection (TSDuck --poll-files workaround)
+        raw = build_splice_insert_bin(
+            event_id=event_id,
+            pts_time=None,
+            duration_pts=dur_pts,
+            out_of_network=True,
+            unique_program_id=1,
+        )
+        self.pending_raw_sections.append(raw)
+
     def _process_cue_in(self, media_sequence: int):
         key = self._cue_key("CUE-IN", media_sequence)
         if self._is_seen(key):
@@ -606,6 +712,16 @@ class ManifestMonitor:
             unique_program_id=1,
         )
         self._queue_command(xml, f"CUE-IN event_id={event_id}")
+
+        # Also queue as binary for reliable injection (TSDuck --poll-files workaround)
+        raw = build_splice_insert_bin(
+            event_id=event_id,
+            pts_time=None,
+            duration_pts=None,
+            out_of_network=False,
+            unique_program_id=1,
+        )
+        self.pending_raw_sections.append(raw)
 
     def _process_daterange(self, daterange: dict):
         dr_id = daterange.get("id", "unknown")
