@@ -128,7 +128,7 @@ When DRM is active, the pipeline routes through ffmpeg:
 ffmpeg -decryption_key <key> -i <hls_url> -c copy -f mpegts pipe:1 | tsp -I file ...
 ```
 
-**Security**: Keys are passed via environment variable (`DRM_KEY`), never via CLI arguments. Keys are redacted in API responses and never written to logs.
+**Security**: Keys are passed to child processes via the `DRM_KEY` environment variable, which is cleared after the ffmpeg command is built. Note: ffmpeg's `-decryption_key` flag does appear in `/proc/pid/cmdline` — mitigate with `hidepid=2` on `/proc` or a dedicated container. Keys are redacted in API responses and never written to logs.
 
 ### Obtaining Decryption Keys
 
@@ -271,32 +271,35 @@ curl -X POST http://localhost:8080/api/v1/pipelines \
 # => {"id": "a1b2c3d4", "state": "running", ...}
 
 # List all running pipelines
-curl http://localhost:8080/api/v1/pipelines
+curl -H "X-API-Key: $API_KEY" http://localhost:8080/api/v1/pipelines
 
 # Check a specific pipeline
-curl http://localhost:8080/api/v1/pipelines/a1b2c3d4
+curl -H "X-API-Key: $API_KEY" http://localhost:8080/api/v1/pipelines/a1b2c3d4
 
 # Stop a specific pipeline
-curl -X DELETE http://localhost:8080/api/v1/pipelines/a1b2c3d4
+curl -X DELETE -H "X-API-Key: $API_KEY" http://localhost:8080/api/v1/pipelines/a1b2c3d4
 
 # Stop all pipelines
-curl -X DELETE http://localhost:8080/api/v1/pipelines
+curl -X DELETE -H "X-API-Key: $API_KEY" http://localhost:8080/api/v1/pipelines
 ```
+
+> **Note:** When `API_KEY` is set, all endpoints except `/api/v1/health` require the `X-API-Key` header.
 
 ## REST API Reference
 
 Full OpenAPI 3.0.3 specification: **[openapi.yaml](openapi.yaml)**
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/v1/health` | Health check |
-| `POST` | `/api/v1/pipelines` | Create and start a new pipeline |
-| `GET` | `/api/v1/pipelines` | List all pipelines |
-| `GET` | `/api/v1/pipelines/<id>` | Get a specific pipeline's status |
-| `DELETE` | `/api/v1/pipelines/<id>` | Stop and remove a specific pipeline |
-| `DELETE` | `/api/v1/pipelines` | Stop and remove all pipelines |
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/health` | No | Health check |
+| `POST` | `/api/v1/pipelines` | Yes | Create and start a new pipeline |
+| `GET` | `/api/v1/pipelines` | Yes | List all pipelines |
+| `GET` | `/api/v1/pipelines/<id>` | Yes | Get a specific pipeline's status |
+| `DELETE` | `/api/v1/pipelines/<id>` | Yes | Stop and remove a specific pipeline |
+| `DELETE` | `/api/v1/pipelines` | Yes | Stop and remove all pipelines |
+| `GET` | `/api/v1/metrics` | Yes | Prometheus metrics (text/plain) or JSON |
 
-Legacy single-pipeline endpoints (`/api/v1/pipeline`) are still supported for backwards compatibility.
+Auth = `X-API-Key` header when `API_KEY` env var is set. Legacy single-pipeline endpoints (`/api/v1/pipeline`) are still supported for backwards compatibility.
 
 ### POST /api/v1/pipelines
 
@@ -578,16 +581,16 @@ curl -X POST http://localhost:8080/api/v1/pipelines \
 # => {"id": "e5f6g7h8", "state": "running", ...}
 
 # List all running pipelines
-curl http://localhost:8080/api/v1/pipelines
+curl -H "X-API-Key: $API_KEY" http://localhost:8080/api/v1/pipelines
 
 # Check a specific pipeline
-curl http://localhost:8080/api/v1/pipelines/a1b2c3d4
+curl -H "X-API-Key: $API_KEY" http://localhost:8080/api/v1/pipelines/a1b2c3d4
 
 # Stop channel 1 only
-curl -X DELETE http://localhost:8080/api/v1/pipelines/a1b2c3d4
+curl -X DELETE -H "X-API-Key: $API_KEY" http://localhost:8080/api/v1/pipelines/a1b2c3d4
 
 # Stop all pipelines
-curl -X DELETE http://localhost:8080/api/v1/pipelines
+curl -X DELETE -H "X-API-Key: $API_KEY" http://localhost:8080/api/v1/pipelines
 ```
 
 ## Environment Variables
