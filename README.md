@@ -191,9 +191,10 @@ docker build -t hls-scte35 .
 # Run the API server
 docker run -p 8080:8080 hls-scte35
 
-# With API key and custom config
+# With API key, pipeline limit, and custom config
 docker run -p 8080:8080 \
   -e API_KEY=mysecret \
+  -e MAX_PIPELINES=130 \
   -v ./config:/opt/hls-scte35/config:ro \
   hls-scte35
 
@@ -588,6 +589,16 @@ curl -X DELETE http://localhost:8080/api/v1/pipelines/a1b2c3d4
 # Stop all pipelines
 curl -X DELETE http://localhost:8080/api/v1/pipelines
 ```
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `API_KEY` | *(unset)* | API key for authentication. When set, all mutating and read endpoints require `X-API-Key` header. |
+| `MAX_PIPELINES` | `50` | Maximum number of concurrent pipelines. Returns 429 when the limit is reached. |
+| `DRM_KEY` | *(unset)* | Pre-shared AES-128 decryption key (32 hex digits). Passed to ffmpeg for DRM decryption. |
+| `PIPELINE_CONFIG` | `/opt/hls-scte35/config/pipeline.toml` | Path to the TOML config file. |
+| `ALLOW_LOCALHOST_SOURCES` | `1` (Docker) | Set to `1` to allow `localhost` / `127.0.0.1` source URLs (bypasses SSRF protection). |
 
 ## Configuration
 
