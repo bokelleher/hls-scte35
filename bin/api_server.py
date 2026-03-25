@@ -749,10 +749,16 @@ class Pipeline:
 class PipelineRegistry:
     """Thread-safe registry of multiple Pipeline instances."""
 
+    DEFAULT_MAX_PIPELINES = 50
+
     def __init__(self, config_path: str):
         self.config_path = config_path
         self._pipelines: dict[str, Pipeline] = {}
         self._lock = threading.Lock()
+        try:
+            self.max_pipelines = int(os.environ.get("MAX_PIPELINES", self.DEFAULT_MAX_PIPELINES))
+        except ValueError:
+            self.max_pipelines = self.DEFAULT_MAX_PIPELINES
 
         # Clean orphaned inject dirs from previous runs
         self._cleanup_orphans()
@@ -774,6 +780,15 @@ class PipelineRegistry:
         return uuid.uuid4().hex[:8]
 
     def create(self, params: dict, metrics: Metrics | None = None) -> dict:
+        # Enforce pipeline limit
+        with self._lock:
+            if len(self._pipelines) >= self.max_pipelines:
+                return {
+                    "error": f"Pipeline limit reached ({self.max_pipelines}). "
+                             "Stop a pipeline or increase MAX_PIPELINES.",
+                    "status": 429,
+                }
+
         source_url = params.get("source_url")
         if not source_url:
             return {"error": "source_url is required", "status": 400}
@@ -998,11 +1013,13 @@ def create_app(config_path: str) -> Flask:
         return jsonify(result), 201
 
     @app.route("/api/v1/pipelines", methods=["GET"])
+    @require_api_key
     def list_pipelines():
         """List all pipelines."""
         return jsonify({"pipelines": registry.list_all()})
 
     @app.route("/api/v1/pipelines/<pipeline_id>", methods=["GET"])
+    @require_api_key
     def get_pipeline(pipeline_id):
         """Get a specific pipeline's status."""
         result = registry.get(pipeline_id)
@@ -1051,6 +1068,7 @@ def create_app(config_path: str) -> Flask:
         return jsonify(results[0] if len(results) == 1 else {"stopped": results})
 
     @app.route("/api/v1/pipeline/status", methods=["GET"])
+    @require_api_key
     def legacy_status():
         """Backwards-compatible: return status of first pipeline."""
         pipelines = registry.list_all()

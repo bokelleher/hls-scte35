@@ -227,6 +227,36 @@ class TestAPIKeyAuth:
         assert resp.status_code == 200
         assert "pipelines_created" in resp.json
 
+    def test_list_pipelines_requires_auth(self, authed_client):
+        resp = authed_client.get("/api/v1/pipelines")
+        assert resp.status_code == 401
+
+    def test_get_pipeline_requires_auth(self, authed_client):
+        resp = authed_client.get("/api/v1/pipelines/nonexistent")
+        assert resp.status_code == 401
+
+    def test_legacy_status_requires_auth(self, authed_client):
+        resp = authed_client.get("/api/v1/pipeline/status")
+        assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Max pipeline limit
+# ---------------------------------------------------------------------------
+
+
+class TestMaxPipelineLimit:
+    def test_max_pipelines_enforced(self):
+        from api_server import PipelineRegistry
+        with patch.dict(os.environ, {"MAX_PIPELINES": "2"}):
+            reg = PipelineRegistry("/dev/null")
+        assert reg.max_pipelines == 2
+
+    def test_default_max_pipelines(self):
+        from api_server import PipelineRegistry
+        reg = PipelineRegistry("/dev/null")
+        assert reg.max_pipelines == 50
+
 
 # ---------------------------------------------------------------------------
 # Input validation via API
