@@ -9,7 +9,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
 
-from api_server import create_app, _redact_key
+from api_server import create_app, _redact_key, Pipeline
+
+
+@pytest.fixture(autouse=True)
+def _fast_monitor_ready():
+    """Skip monitor ready wait in tests."""
+    original = Pipeline.MONITOR_READY_TIMEOUT
+    Pipeline.MONITOR_READY_TIMEOUT = 0.1
+    yield
+    Pipeline.MONITOR_READY_TIMEOUT = original
 
 
 # ---------------------------------------------------------------------------

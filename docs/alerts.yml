@@ -1,0 +1,107 @@
+# Prometheus alerting rules for hls-scte35
+#
+# Usage:
+#   Copy to your Prometheus rules directory and add to prometheus.yml:
+#     rule_files:
+#       - "alerts.yml"
+
+groups:
+  - name: hls-scte35
+    rules:
+      # Pipeline down — both processes exited
+      - alert: PipelineDown
+        expr: pipeline_state == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pipeline {{ $labels.id }} is down"
+          description: "Both tsp and monitor processes have exited for >2m."
+
+      # Pipeline degraded — one process crashed
+      - alert: PipelineDegraded
+        expr: pipeline_state == 0.5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pipeline {{ $labels.id }} is degraded (one process down)"
+
+      # High manifest poll error rate
+      - alert: ManifestPollErrors
+        expr: rate(manifest_poll_errors_total[5m]) / rate(manifest_poll_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Manifest poll error rate >10% for 5m"
+          description: "Source may be unreachable. Check network and source URL."
+
+      # Sustained poll failures (backoff engaged)
+      - alert: ManifestPollBackoff
+        expr: rate(manifest_poll_errors_total[5m]) > 0 and rate(manifest_poll_total[5m]) < 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Monitor is in extended backoff — source appears down"
+          description: "Poll rate has dropped below 3/min, indicating exponential backoff is active."
+
+      # Manifest parse errors (malformed manifests)
+      - alert: ManifestParseErrors
+        expr: increase(manifest_parse_errors_total[15m]) > 3
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Multiple manifest parse failures in 15m"
+          description: "Source is returning malformed manifests."
+
+      # No SCTE-35 events detected for 30 minutes
+      - alert: NoEventsDetected
+        expr: increase(scte35_events_detected_total[30m]) == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No SCTE-35 events detected in 30 minutes"
+
+      # Excessive restarts
+      - alert: ExcessiveRestarts
+        expr: increase(pipeline_restarts_total[10m]) > 3
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pipeline {{ $labels.id }} restarted {{ $value }} times in 10m"
+          description: "Restart storm — supervisor may give up at 5 restarts per 5m window."
+
+      # PTS calibration stuck
+      - alert: PTSCalibrationFailing
+        expr: pts_calibration_status == 0 and pts_calibration_attempts_total > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PTS calibration has not succeeded after {{ $value }} attempts"
+          description: "Pipeline may not be producing output. Check tsp.log."
+
+      # Output file truncated (disk janitor activated)
+      - alert: OutputTruncated
+        expr: increase(output_truncations_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pipeline {{ $labels.id }} output was truncated to prevent disk exhaustion"
+          description: "Output TS file exceeded size limit. Consider reducing retention or switching to UDP/SRT output."
+
+      # No active pipelines (possible misconfiguration or crash)
+      - alert: NoPipelinesRunning
+        expr: active_pipelines == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No pipelines running for 10 minutes"
+          description: "API server is up but has no active pipelines."

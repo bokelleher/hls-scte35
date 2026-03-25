@@ -83,9 +83,10 @@ COPY openapi.yaml .
 # Make scripts executable
 RUN chmod +x bin/*.sh
 
-# Create non-root user
+# Create non-root user with restricted directory permissions
 RUN adduser -D -H -s /sbin/nologin hls-scte35 && \
-    chown -R hls-scte35:hls-scte35 inject logs output
+    chown -R hls-scte35:hls-scte35 inject logs output && \
+    chmod 750 inject logs output
 
 # Run tests to verify the image is correct
 RUN python3 -m pytest tests/ -q --tb=short

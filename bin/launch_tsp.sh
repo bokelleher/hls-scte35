@@ -213,13 +213,19 @@ fi
 
 case "$DRM_MODE" in
     aes128)
-        # Pre-shared key: route through ffmpeg with explicit decryption key
+        # Pre-shared key: route through ffmpeg with explicit decryption key.
+        # Note: -decryption_key appears in /proc/pid/cmdline. We mitigate by:
+        # 1. Restricting /proc/pid visibility via hidepid (Docker/systemd)
+        # 2. Running as a dedicated non-root user (Dockerfile)
+        # 3. Clearing the key from the environment after building the command
         USE_FFMPEG=true
         FFMPEG_ARGS+=( -decryption_key "$DRM_KEY" )
         if [ -n "$DRM_IV" ]; then
             FFMPEG_ARGS+=( -decryption_iv "$DRM_IV" )
         fi
         echo "  DRM key:     ****${DRM_KEY: -4}"
+        # Clear key from environment to prevent /proc/pid/environ exposure
+        unset DRM_KEY
         ;;
     auto)
         # Let ffmpeg handle key fetch from EXT-X-KEY URI automatically

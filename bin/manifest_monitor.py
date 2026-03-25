@@ -272,8 +272,48 @@ def decode_daterange_scte35(scte35_value: str) -> dict:
 # Manifest Poller
 # ---------------------------------------------------------------------------
 
+def validate_config(config: dict) -> list[str]:
+    """Validate config dict, returning a list of error messages (empty = valid)."""
+    errors = []
+    for section in ("source", "scte35", "tsduck", "logging"):
+        if section not in config:
+            errors.append(f"Missing required config section: [{section}]")
+    if errors:
+        return errors  # can't validate fields if sections are missing
+
+    if not config["source"].get("url"):
+        errors.append("[source] url is required")
+
+    pi = config["source"].get("poll_interval", 6.0)
+    try:
+        if not (0.5 <= float(pi) <= 300):
+            errors.append(f"[source] poll_interval must be 0.5–300s, got {pi}")
+    except (TypeError, ValueError):
+        errors.append(f"[source] poll_interval must be a number, got {pi!r}")
+
+    pid = config["scte35"].get("pid", 500)
+    try:
+        if not (32 <= int(pid) <= 8191):
+            errors.append(f"[scte35] pid must be 32–8191, got {pid}")
+    except (TypeError, ValueError):
+        errors.append(f"[scte35] pid must be an integer, got {pid!r}")
+
+    mode = config["scte35"].get("mode", "auto_detect")
+    if mode not in ("auto_detect", "manifest_only", "inband_only"):
+        errors.append(f"[scte35] mode must be auto_detect/manifest_only/inband_only, got {mode!r}")
+
+    return errors
+
+
 class ManifestMonitor:
     def __init__(self, config: dict):
+        # Validate config upfront with clear error messages
+        config_errors = validate_config(config)
+        if config_errors:
+            raise ValueError(
+                "Invalid configuration:\n  " + "\n  ".join(config_errors)
+            )
+
         self.source_url = config["source"]["url"]
         self.poll_interval = config["source"].get("poll_interval", 6.0)
         self.headers = config["source"].get("headers", {})
@@ -287,11 +327,11 @@ class ManifestMonitor:
         self.inject_dir = Path(config["tsduck"].get(
             "inject_dir", "/opt/hls-scte35/inject"
         ))
-        self.inject_dir.mkdir(parents=True, exist_ok=True)
+        self.inject_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
         self.inject_file = self.inject_dir / "splice.xml"
 
         log_dir = Path(config["logging"].get("log_dir", "/opt/hls-scte35/logs"))
-        log_dir.mkdir(parents=True, exist_ok=True)
+        log_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
         log_file = log_dir / config["logging"].get("splice_log", "splice.log")
 
         self.logger = logging.getLogger("manifest_monitor")
@@ -322,6 +362,10 @@ class ManifestMonitor:
         # Graceful shutdown
         self._running = True
 
+        # Exponential backoff state for network errors
+        self._consecutive_errors = 0
+        self._max_backoff = 120.0  # cap at 2 minutes
+
         # Grafana annotations for exact-time event markers
         grafana_config = config.get("grafana", {})
         self._grafana_url = grafana_config.get("url")  # e.g. "http://localhost:3000"
@@ -344,6 +388,8 @@ class ManifestMonitor:
             "calibration_enabled", True
         )
         self._calibration_attempts = 0
+        self._calibration_probes: list[int] = []  # collect N probes, use median
+        self._calibration_num_probes = config["scte35"].get("calibration_probes", 3)
         self._start_time: float | None = None
         prom.set("pts_calibration_status", -1.0 if not self._calibration_enabled else 0.0)
 
@@ -496,8 +542,11 @@ class ManifestMonitor:
 
     def _flush_commands(self):
         """Write all pending commands (XML and raw binary) to inject files."""
+        has_xml = bool(self.pending_commands)
+        has_binary = bool(self.pending_raw_sections)
+
         # Flush XML commands
-        if self.pending_commands:
+        if has_xml:
             xml = '<?xml version="1.0" encoding="UTF-8"?>\n<tsduck>\n'
             for cmd in self.pending_commands:
                 xml += cmd + "\n"
@@ -510,10 +559,20 @@ class ManifestMonitor:
             self.logger.info(
                 f"Wrote {len(self.pending_commands)} XML command(s) to {self.inject_file.name}"
             )
+
+            # Warn if XML-only (no binary backup) — the XML poll-files path
+            # in TSDuck is unreliable and may silently miss file changes.
+            if not has_binary:
+                prom.inc("xml_only_injections_total")
+                self.logger.warning(
+                    "XML-only injection (no binary backup). "
+                    "TSDuck --poll-files may not pick up the XML change. "
+                    "Binary inject path is the reliable one."
+                )
             self.pending_commands.clear()
 
         # Flush raw binary sections
-        if self.pending_raw_sections:
+        if has_binary:
             bin_file = self.inject_file.with_suffix(".bin")
             # Concatenate all raw sections into one binary file
             # Each section is a complete splice_information_table
@@ -608,10 +667,22 @@ class ManifestMonitor:
 
         return None
 
+    @staticmethod
+    def _median(values: list[int]) -> int:
+        """Return the median of a list of integers."""
+        s = sorted(values)
+        n = len(s)
+        if n % 2 == 1:
+            return s[n // 2]
+        return (s[n // 2 - 1] + s[n // 2]) // 2
+
     def _calibrate_pts(self, playlist=None):
         """
         Measure the actual PTS in the output and adjust pts_base so that
         _estimate_pts_from_pdt() produces correct values.
+
+        Collects N probes and uses the median to resist outliers from
+        corrupt output or sync glitches.
 
         Called from poll_once() until calibration succeeds.
         """
@@ -638,15 +709,26 @@ class ManifestMonitor:
                 self.logger.debug("PTS calibration: probe returned None, will retry")
             return
 
+        self._calibration_probes.append(probed_pts)
+        self.logger.debug(
+            "PTS calibration: probe %d/%d = %d",
+            len(self._calibration_probes), self._calibration_num_probes, probed_pts,
+        )
+
+        if len(self._calibration_probes) < self._calibration_num_probes:
+            return  # need more probes
+
+        # Use the median of all collected probes
+        median_pts = self._median(self._calibration_probes)
         old_base = self.pts_base
-        self.pts_base = probed_pts
+        self.pts_base = median_pts
         self._pts_calibrated = True
         prom.set("pts_calibration_status", 1.0)
-        offset = probed_pts - old_base
+        offset = median_pts - old_base
         self.logger.info(
-            f"PTS calibrated: probed={probed_pts} "
-            f"(old_base={old_base}, offset={offset:+d}, "
-            f"{offset / 90000:+.3f}s)"
+            f"PTS calibrated: median={median_pts} from {len(self._calibration_probes)} probes "
+            f"(values={self._calibration_probes}, old_base={old_base}, "
+            f"offset={offset:+d}, {offset / 90000:+.3f}s)"
         )
 
     def _process_cue_out(self, duration: float | None, media_sequence: int):
@@ -725,7 +807,10 @@ class ManifestMonitor:
 
     def _process_daterange(self, daterange: dict):
         dr_id = daterange.get("id", "unknown")
-        key = self._cue_key("DATERANGE", dr_id)
+        # Include start_date in dedup key so that origins reusing the same
+        # DATERANGE ID across different time windows don't get silently dropped.
+        start_date = daterange.get("start_date", "")
+        key = self._cue_key("DATERANGE", f"{dr_id}:{start_date}")
         if self._is_seen(key):
             return
         self._mark_seen(key)
@@ -908,8 +993,8 @@ class ManifestMonitor:
 
             seg_index += 1
 
-    def poll_once(self):
-        """Fetch manifest and process SCTE-35 signals."""
+    def poll_once(self) -> bool:
+        """Fetch manifest and process SCTE-35 signals. Returns True on success."""
         poll_start = time.monotonic()
         prom.inc("manifest_poll_total")
 
@@ -919,19 +1004,36 @@ class ManifestMonitor:
         except requests.RequestException as e:
             prom.inc("manifest_poll_errors_total")
             self.logger.error(f"Failed to fetch manifest: {e}")
-            return
+            return False
 
-        playlist = m3u8.loads(resp.text, uri=self.source_url)
+        try:
+            playlist = m3u8.loads(resp.text, uri=self.source_url)
+        except Exception as e:
+            prom.inc("manifest_parse_errors_total")
+            self.logger.error(f"Failed to parse manifest: {e}")
+            return False
 
         # If master playlist, follow highest bandwidth rendition
         if playlist.is_variant:
             if not playlist.playlists:
                 self.logger.warning("Master playlist has no renditions")
-                return
+                return False
+            prom.set("rendition_count", float(len(playlist.playlists)))
             best = max(
                 playlist.playlists,
                 key=lambda p: p.stream_info.bandwidth or 0,
             )
+            # Track rendition switches
+            rendition_uri = best.uri
+            if not hasattr(self, "_current_rendition"):
+                self._current_rendition = None
+            if self._current_rendition and self._current_rendition != rendition_uri:
+                self.logger.warning(
+                    f"Rendition switch: {self._current_rendition} → {rendition_uri}"
+                )
+                prom.inc("rendition_switches_total")
+            self._current_rendition = rendition_uri
+            prom.set("rendition_bandwidth", float(best.stream_info.bandwidth or 0))
             self.logger.debug(
                 f"Following rendition: {best.uri} "
                 f"({best.stream_info.bandwidth} bps)"
@@ -939,9 +1041,14 @@ class ManifestMonitor:
             try:
                 resp = self.session.get(best.absolute_uri, timeout=10)
                 resp.raise_for_status()
-                playlist = m3u8.loads(resp.text, uri=best.absolute_uri)
             except requests.RequestException as e:
                 self.logger.error(f"Failed to fetch rendition: {e}")
+                return False
+            try:
+                playlist = m3u8.loads(resp.text, uri=best.absolute_uri)
+            except Exception as e:
+                prom.inc("manifest_parse_errors_total")
+                self.logger.error(f"Failed to parse rendition manifest: {e}")
                 return
 
         # Detect DRM from EXT-X-KEY tags
@@ -980,6 +1087,8 @@ class ManifestMonitor:
         # Export metrics to file for cross-process aggregation by the API server
         metrics_file = self.inject_dir / "monitor.metrics.json"
         prom.export_to_file(str(metrics_file))
+
+        return True
 
     def _adapt_poll_interval(self, playlist) -> float:
         """
@@ -1027,14 +1136,38 @@ class ManifestMonitor:
         current_interval = self.poll_interval
 
         while self._running:
+            success = False
             try:
-                self.poll_once()
+                success = self.poll_once()
                 # Prune expired entries from seen cues and raw hashes
                 self._prune_seen()
             except Exception as e:
                 self.logger.exception(f"Unhandled error in poll: {e}")
+
+            # Exponential backoff on consecutive failures
+            if success:
+                if self._consecutive_errors > 0:
+                    self.logger.info(
+                        "Source recovered after %d consecutive errors",
+                        self._consecutive_errors,
+                    )
+                self._consecutive_errors = 0
+                wait = current_interval
+            else:
+                self._consecutive_errors += 1
+                backoff = min(
+                    self.poll_interval * (2 ** self._consecutive_errors),
+                    self._max_backoff,
+                )
+                if self._consecutive_errors in (1, 5, 25, 100) or self._consecutive_errors % 100 == 0:
+                    self.logger.warning(
+                        "Consecutive poll failures: %d, backing off to %.1fs",
+                        self._consecutive_errors, backoff,
+                    )
+                wait = backoff
+
             # Sleep in small increments so we can respond to shutdown quickly
-            sleep_until = time.monotonic() + current_interval
+            sleep_until = time.monotonic() + wait
             while self._running and time.monotonic() < sleep_until:
                 time.sleep(min(0.5, sleep_until - time.monotonic()))
 

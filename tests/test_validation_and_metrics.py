@@ -15,7 +15,17 @@ from api_server import (
     validate_source_url,
     validate_output_path,
     Metrics,
+    Pipeline,
 )
+
+
+@pytest.fixture(autouse=True)
+def _fast_monitor_ready():
+    """Skip monitor ready wait in tests."""
+    original = Pipeline.MONITOR_READY_TIMEOUT
+    Pipeline.MONITOR_READY_TIMEOUT = 0.1
+    yield
+    Pipeline.MONITOR_READY_TIMEOUT = original
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +69,48 @@ class TestValidateSourceURL:
     def test_blocks_metadata_endpoint(self):
         err = validate_source_url("http://169.254.169.254/latest/meta-data/")
         assert err is not None
-        assert "metadata" in err.lower() or "SSRF" in err
+        assert "blocked" in err.lower() or "SSRF" in err
+
+    # --- SSRF bypass vectors (HIGH #6) ---
+
+    def test_blocks_ipv6_mapped_loopback(self):
+        err = validate_source_url("http://[::ffff:127.0.0.1]:8899/index.m3u8")
+        assert err is not None
+        assert "blocked" in err.lower() or "SSRF" in err
+
+    def test_blocks_decimal_loopback(self):
+        err = validate_source_url("http://2130706433/index.m3u8")
+        assert err is not None
+        assert "blocked" in err.lower() or "SSRF" in err
+
+    def test_blocks_private_10_x(self):
+        err = validate_source_url("http://10.0.0.1/index.m3u8")
+        assert err is not None
+        assert "blocked" in err.lower() or "SSRF" in err
+
+    def test_blocks_private_172_16(self):
+        err = validate_source_url("http://172.16.0.1/index.m3u8")
+        assert err is not None
+        assert "blocked" in err.lower() or "SSRF" in err
+
+    def test_blocks_private_192_168(self):
+        err = validate_source_url("http://192.168.1.1/index.m3u8")
+        assert err is not None
+        assert "blocked" in err.lower() or "SSRF" in err
+
+    def test_blocks_azure_metadata(self):
+        err = validate_source_url("http://168.63.129.16/metadata")
+        assert err is not None
+        assert "blocked" in err.lower() or "SSRF" in err
+
+    def test_blocks_ipv6_loopback(self):
+        err = validate_source_url("http://[::1]:8899/index.m3u8")
+        assert err is not None
+        assert "blocked" in err.lower() or "SSRF" in err
+
+    def test_blocks_zero_ip(self):
+        err = validate_source_url("http://0.0.0.0/index.m3u8")
+        assert err is not None
 
 
 # ---------------------------------------------------------------------------
@@ -231,3 +282,35 @@ class TestInputValidation:
         )
         assert resp.status_code == 400
         assert "hex" in resp.json["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# API Key — query param no longer accepted (HIGH #7)
+# ---------------------------------------------------------------------------
+
+
+class TestAPIKeyHeaderOnly:
+    def test_query_param_key_rejected(self, authed_client):
+        """API key in query params must not be accepted (leaks in logs/referrer)."""
+        resp = authed_client.post(
+            "/api/v1/pipelines?api_key=secret123",
+            data=json.dumps({"source_url": "http://example.com/live.m3u8"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Rate Limiting (HIGH #9)
+# ---------------------------------------------------------------------------
+
+
+class TestRateLimiting:
+    def test_rate_limit_unit(self):
+        from api_server import RateLimiter
+        lim = RateLimiter(max_requests=3, window_seconds=60.0)
+        assert lim.is_allowed("a")
+        assert lim.is_allowed("a")
+        assert lim.is_allowed("a")
+        assert not lim.is_allowed("a")  # 4th request blocked
+        assert lim.is_allowed("b")  # different key OK

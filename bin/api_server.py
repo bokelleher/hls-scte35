@@ -19,10 +19,15 @@ Endpoints:
 
 import argparse
 import functools
+import glob as globmod
+import hmac
+import ipaddress
 import logging
+import logging.handlers
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -70,6 +75,32 @@ ALLOWED_URL_SCHEMES = {"http", "https"}
 SAFE_PATH_RE = re.compile(r"^[a-zA-Z0-9_./-]+$")
 
 
+def _resolve_to_ips(hostname: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Resolve hostname to IP addresses for SSRF validation."""
+    try:
+        results = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        ips = []
+        for family, _, _, _, sockaddr in results:
+            ips.append(ipaddress.ip_address(sockaddr[0]))
+        return ips
+    except (socket.gaierror, OSError):
+        return []
+
+
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Check if an IP is in a blocked range (loopback, private, link-local, metadata)."""
+    # Unwrap IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1)
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+
+    if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved:
+        return True
+    # Azure metadata endpoint
+    if ip == ipaddress.ip_address("168.63.129.16"):
+        return True
+    return False
+
+
 def validate_source_url(url: str) -> str | None:
     """Validate source URL. Returns error message or None if valid."""
     parsed = urlparse(url)
@@ -77,16 +108,41 @@ def validate_source_url(url: str) -> str | None:
         return f"Invalid URL scheme '{parsed.scheme}'. Only http/https allowed."
     if not parsed.hostname:
         return "URL must have a hostname."
-    # Block common SSRF targets
+
     hostname = parsed.hostname.lower()
-    if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"):
-        if not os.environ.get("ALLOW_LOCALHOST_SOURCES"):
-            return (
-                "Localhost sources blocked (SSRF protection). "
-                "Set ALLOW_LOCALHOST_SOURCES=1 to override."
-            )
-    if hostname.startswith("169.254.") or hostname.startswith("metadata"):
+
+    # Block metadata hostnames by name (before DNS resolution)
+    if hostname in ("metadata", "metadata.google.internal",
+                    "metadata.google.internal."):
         return "Cloud metadata endpoints blocked (SSRF protection)."
+
+    # Try to parse hostname directly as an IP (handles decimal, octal, hex, IPv6)
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if _is_blocked_ip(ip):
+            if os.environ.get("ALLOW_LOCALHOST_SOURCES") and ip.is_loopback:
+                pass  # explicitly allowed
+            else:
+                return (
+                    f"Address {ip} is blocked (SSRF protection). "
+                    "Private/loopback/link-local/metadata IPs are not allowed."
+                )
+    except ValueError:
+        # Not a literal IP — resolve the hostname and check all results
+        if hostname in ("localhost",):
+            if not os.environ.get("ALLOW_LOCALHOST_SOURCES"):
+                return (
+                    "Localhost sources blocked (SSRF protection). "
+                    "Set ALLOW_LOCALHOST_SOURCES=1 to override."
+                )
+        else:
+            resolved_ips = _resolve_to_ips(hostname)
+            for ip in resolved_ips:
+                if _is_blocked_ip(ip):
+                    return (
+                        f"Hostname '{hostname}' resolves to blocked address {ip} "
+                        "(SSRF protection)."
+                    )
     return None
 
 
@@ -105,6 +161,49 @@ def validate_output_path(path: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Rate Limiting
+# ---------------------------------------------------------------------------
+
+class RateLimiter:
+    """Simple in-process per-IP rate limiter using a sliding window."""
+
+    def __init__(self, max_requests: int = 60, window_seconds: float = 60.0):
+        self.max_requests = max_requests
+        self.window = window_seconds
+        self._hits: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def is_allowed(self, key: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            timestamps = self._hits.get(key, [])
+            # Prune old entries
+            timestamps = [t for t in timestamps if now - t < self.window]
+            if len(timestamps) >= self.max_requests:
+                self._hits[key] = timestamps
+                return False
+            timestamps.append(now)
+            self._hits[key] = timestamps
+            return True
+
+
+def rate_limit(limiter_attr: str):
+    """Decorator that enforces per-IP rate limiting using a named app limiter."""
+    def decorator(f):
+        @functools.wraps(f)
+        def decorated(*args, **kwargs):
+            from flask import current_app
+            lim = current_app.extensions.get("hls_scte35", {}).get(limiter_attr)
+            if lim:
+                client_ip = request.remote_addr or "unknown"
+                if not lim.is_allowed(client_ip):
+                    return jsonify({"error": "Rate limit exceeded. Try again later."}), 429
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
+
+
+# ---------------------------------------------------------------------------
 # API Key Authentication
 # ---------------------------------------------------------------------------
 
@@ -115,8 +214,8 @@ def require_api_key(f):
         api_key = os.environ.get("API_KEY")
         if not api_key:
             return f(*args, **kwargs)  # No key configured = no auth
-        provided = request.headers.get("X-API-Key") or request.args.get("api_key")
-        if provided != api_key:
+        provided = request.headers.get("X-API-Key", "")
+        if not hmac.compare_digest(provided, api_key):
             return jsonify({"error": "Unauthorized. Provide X-API-Key header."}), 401
         return f(*args, **kwargs)
     return decorated
@@ -160,6 +259,12 @@ class Metrics:
 class Pipeline:
     """Manages the lifecycle of one tsp + monitor subprocess pair."""
 
+    # Disk janitor defaults
+    LOG_MAX_BYTES = 50 * 1024 * 1024    # 50 MB per log file
+    LOG_BACKUP_COUNT = 3                 # keep 3 rotated copies
+    OUTPUT_MAX_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB per output TS
+    JANITOR_INTERVAL = 60.0             # check every 60s
+
     def __init__(self, pipeline_id: str, config_path: str, params: dict):
         self.id = pipeline_id
         self.config_path = config_path
@@ -171,15 +276,15 @@ class Pipeline:
         # Per-pipeline isolated directories
         self.inject_dir = INSTALL_DIR / "inject" / self.id
         self.log_dir = INSTALL_DIR / "logs" / self.id
-        self.inject_dir.mkdir(parents=True, exist_ok=True)
-        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.inject_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
+        self.log_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
 
         # Resolve output file with pipeline ID to avoid collisions
         if params.get("output_mode", "file") == "file":
             output_file = params.get("output_file")
             if not output_file:
                 output_dir = INSTALL_DIR / "output"
-                output_dir.mkdir(parents=True, exist_ok=True)
+                output_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
                 params["output_file"] = str(output_dir / f"{self.id}.ts")
 
         # Process supervision
@@ -191,6 +296,8 @@ class Pipeline:
         self._tsp_cmd: list[str] = []
         self._monitor_cmd: list[str] = []
         self._proc_env: dict = {}
+        self._log_handles: list = []  # tracked file handles for cleanup
+        self._janitor_thread: threading.Thread | None = None
 
     @property
     def is_running(self) -> bool:
@@ -358,24 +465,176 @@ class Pipeline:
         )
         self._supervisor_thread.start()
 
+        # Start disk janitor thread (log rotation + output truncation)
+        self._janitor_thread = threading.Thread(
+            target=self._disk_janitor, daemon=True,
+            name=f"janitor-{self.id}",
+        )
+        self._janitor_thread.start()
+
         return self.status()
 
+    def _open_log(self, name: str):
+        """Open a log file and track the handle for cleanup."""
+        fh = open(self.log_dir / f"{name}.log", "a")
+        self._log_handles.append(fh)
+        return fh
+
+    def _close_log_handles(self):
+        """Close all tracked log file handles."""
+        for fh in self._log_handles:
+            try:
+                fh.close()
+            except OSError:
+                pass
+        self._log_handles.clear()
+
+    # Max time to wait for monitor to become ready before starting tsp
+    MONITOR_READY_TIMEOUT = 30.0
+    MONITOR_READY_POLL = 0.5
+
     def _launch_processes(self):
-        """Launch tsp and monitor subprocesses."""
-        self.tsp_proc = subprocess.Popen(
-            self._tsp_cmd,
-            stdout=open(self.log_dir / "tsp.log", "a"),
-            stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid,
-            env=self._proc_env,
-        )
+        """Launch monitor first, wait for it to write initial splice file, then start tsp.
+
+        This prevents the race condition where tsp downloads a static/VOD
+        playlist at network speed before the monitor has written any splice
+        commands.
+        """
+        # Close any leftover handles from a previous launch (restart path)
+        self._close_log_handles()
+
+        inject_file = self.inject_dir / "splice.xml"
+        inject_mtime_before = inject_file.stat().st_mtime if inject_file.exists() else 0
+
+        # Start monitor first
         self.monitor_proc = subprocess.Popen(
             self._monitor_cmd,
-            stdout=open(self.log_dir / "monitor.log", "a"),
+            stdout=self._open_log("monitor"),
             stderr=subprocess.STDOUT,
             preexec_fn=os.setsid,
             env=self._proc_env,
         )
+
+        # Wait for monitor to update the splice file (indicates first poll completed)
+        logger = logging.getLogger(f"launch.{self.id}")
+        deadline = time.monotonic() + self.MONITOR_READY_TIMEOUT
+        ready = False
+        while time.monotonic() < deadline:
+            # Check if monitor has written/updated the inject file
+            if inject_file.exists() and inject_file.stat().st_mtime > inject_mtime_before:
+                ready = True
+                break
+            # Check monitor hasn't crashed
+            if self.monitor_proc.poll() is not None:
+                logger.warning("Monitor exited before becoming ready (rc=%s)", self.monitor_proc.returncode)
+                break
+            time.sleep(self.MONITOR_READY_POLL)
+
+        if ready:
+            logger.info("Monitor ready, starting tsp")
+        else:
+            logger.warning("Monitor not ready after %.0fs, starting tsp anyway", self.MONITOR_READY_TIMEOUT)
+
+        # Start tsp
+        self.tsp_proc = subprocess.Popen(
+            self._tsp_cmd,
+            stdout=self._open_log("tsp"),
+            stderr=subprocess.STDOUT,
+            preexec_fn=os.setsid,
+            env=self._proc_env,
+        )
+
+    def _disk_janitor(self):
+        """
+        Background thread that rotates log files and truncates oversized
+        output TS files to prevent unbounded disk growth.
+        """
+        logger = logging.getLogger(f"janitor.{self.id}")
+
+        while not self._supervisor_stop.wait(timeout=self.JANITOR_INTERVAL):
+            # --- Log rotation ---
+            for log_name in ("tsp.log", "monitor.log"):
+                log_path = self.log_dir / log_name
+                try:
+                    if log_path.exists() and log_path.stat().st_size > self.LOG_MAX_BYTES:
+                        # Rotate: .log -> .log.1 -> .log.2 -> .log.3 (delete .log.3)
+                        for i in range(self.LOG_BACKUP_COUNT, 0, -1):
+                            src = self.log_dir / f"{log_name}.{i}" if i > 1 else log_path
+                            dst = self.log_dir / f"{log_name}.{i}"
+                            if i == self.LOG_BACKUP_COUNT:
+                                # delete oldest
+                                oldest = self.log_dir / f"{log_name}.{i}"
+                                if oldest.exists():
+                                    oldest.unlink()
+                            if i > 1:
+                                prev = self.log_dir / f"{log_name}.{i - 1}"
+                                if prev.exists():
+                                    prev.rename(dst)
+                        # Move current to .1 and create fresh file
+                        rotated = self.log_dir / f"{log_name}.1"
+                        if log_path.exists():
+                            log_path.rename(rotated)
+                        logger.info("Rotated %s (exceeded %d MB)",
+                                    log_name, self.LOG_MAX_BYTES // (1024 * 1024))
+                except OSError as e:
+                    logger.warning("Log rotation failed for %s: %s", log_name, e)
+
+            # --- Output TS truncation ---
+            output_file = self.params.get("output_file")
+            if output_file and self.params.get("output_mode", "file") == "file":
+                try:
+                    out_path = Path(output_file)
+                    if out_path.exists() and out_path.stat().st_size > self.OUTPUT_MAX_BYTES:
+                        logger.warning(
+                            "Output file %s exceeded %d GB, truncating",
+                            output_file, self.OUTPUT_MAX_BYTES // (1024 * 1024 * 1024),
+                        )
+                        # Truncate from the beginning by keeping only the tail
+                        with open(out_path, "r+b") as f:
+                            f.seek(-self.OUTPUT_MAX_BYTES // 2, 2)  # keep last half
+                            tail = f.read()
+                            f.seek(0)
+                            f.write(tail)
+                            f.truncate()
+                        prom.inc("output_truncations_total", labels={"id": self.id})
+                except OSError as e:
+                    logger.warning("Output truncation failed: %s", e)
+
+            # --- Output validation (file mode only) ---
+            if output_file and self.params.get("output_mode", "file") == "file":
+                out_path = Path(output_file)
+                if out_path.exists() and out_path.stat().st_size > 0:
+                    try:
+                        result = subprocess.run(
+                            [
+                                "ffprobe", "-v", "quiet",
+                                "-show_streams", "-of", "json",
+                                out_path,
+                            ],
+                            capture_output=True, text=True, timeout=15,
+                        )
+                        if result.returncode == 0:
+                            import json as _json
+                            probe = _json.loads(result.stdout)
+                            streams = probe.get("streams", [])
+                            has_video = any(s.get("codec_type") == "video" for s in streams)
+                            scte35_pid = str(self.params.get("scte35_pid", 500))
+                            # Check for SCTE-35 PID in stream list (shows as "data" codec type)
+                            has_scte35 = any(
+                                s.get("codec_type") == "data" or
+                                str(s.get("id", "")) == f"0x{int(scte35_pid):04x}"
+                                for s in streams
+                            )
+                            prom.set("output_valid", 1.0 if has_video else 0.0,
+                                     labels={"id": self.id})
+                            prom.set("output_scte35_pid_present",
+                                     1.0 if has_scte35 else 0.0,
+                                     labels={"id": self.id})
+                        else:
+                            prom.set("output_valid", 0.0, labels={"id": self.id})
+                            logger.warning("Output validation: ffprobe failed (rc=%d)", result.returncode)
+                    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+                        logger.debug("Output validation skipped: %s", e)
 
     def _supervise(self):
         """
@@ -422,7 +681,7 @@ class Pipeline:
                 try:
                     self.tsp_proc = subprocess.Popen(
                         self._tsp_cmd,
-                        stdout=open(self.log_dir / "tsp.log", "a"),
+                        stdout=self._open_log("tsp"),
                         stderr=subprocess.STDOUT,
                         preexec_fn=os.setsid,
                         env=self._proc_env,
@@ -440,7 +699,7 @@ class Pipeline:
                 try:
                     self.monitor_proc = subprocess.Popen(
                         self._monitor_cmd,
-                        stdout=open(self.log_dir / "monitor.log", "a"),
+                        stdout=self._open_log("monitor"),
                         stderr=subprocess.STDOUT,
                         preexec_fn=os.setsid,
                         env=self._proc_env,
@@ -473,6 +732,7 @@ class Pipeline:
         self.tsp_proc = None
         self.monitor_proc = None
         self._start_time = None
+        self._close_log_handles()
 
         # Clean up inject directory (prevents stale metrics)
         import shutil
@@ -535,6 +795,34 @@ class PipelineRegistry:
         if drm_key and not re.match(r'^[0-9a-fA-F]{32}$', drm_key):
             return {"error": "drm_key must be exactly 32 hex digits", "status": 400}
 
+        # Validate numeric bounds
+        poll_interval = params.get("poll_interval")
+        if poll_interval is not None:
+            try:
+                poll_interval = float(poll_interval)
+                if not (0.5 <= poll_interval <= 300):
+                    return {"error": "poll_interval must be between 0.5 and 300 seconds", "status": 400}
+            except (TypeError, ValueError):
+                return {"error": "poll_interval must be a number", "status": 400}
+
+        scte35_pid = params.get("scte35_pid")
+        if scte35_pid is not None:
+            try:
+                scte35_pid = int(scte35_pid)
+                if not (32 <= scte35_pid <= 8191):
+                    return {"error": "scte35_pid must be between 32 and 8191", "status": 400}
+            except (TypeError, ValueError):
+                return {"error": "scte35_pid must be an integer", "status": 400}
+
+        output_bitrate = params.get("output_bitrate")
+        if output_bitrate is not None:
+            try:
+                output_bitrate = int(output_bitrate)
+                if not (100000 <= output_bitrate <= 200000000):
+                    return {"error": "output_bitrate must be between 100000 and 200000000 bps", "status": 400}
+            except (TypeError, ValueError):
+                return {"error": "output_bitrate must be an integer", "status": 400}
+
         with self._lock:
             pipeline_id = self._generate_id()
             pipeline = Pipeline(pipeline_id, self.config_path, params)
@@ -593,6 +881,12 @@ def create_app(config_path: str) -> Flask:
     app.logger.setLevel(logging.INFO)
     registry = PipelineRegistry(config_path)
     metrics = Metrics()
+
+    # Expose registry and rate limiters on app for access by decorators and main()
+    ext = app.extensions.setdefault("hls_scte35", {})
+    ext["registry"] = registry
+    ext["global_limiter"] = RateLimiter(max_requests=60, window_seconds=60.0)
+    ext["create_limiter"] = RateLimiter(max_requests=5, window_seconds=60.0)
 
     @app.route("/api/v1/health", methods=["GET"])
     def health():
@@ -675,6 +969,7 @@ def create_app(config_path: str) -> Flask:
 
     @app.route("/api/v1/pipelines", methods=["POST"])
     @require_api_key
+    @rate_limit("create_limiter")
     def create_pipeline():
         """
         Create and start a new pipeline.
@@ -735,6 +1030,7 @@ def create_app(config_path: str) -> Flask:
 
     @app.route("/api/v1/pipeline", methods=["POST"])
     @require_api_key
+    @rate_limit("create_limiter")
     def legacy_start():
         """Backwards-compatible single pipeline start. Stops any existing pipelines first."""
         registry.remove_all(metrics=metrics)
@@ -781,6 +1077,10 @@ def main():
 
     app = create_app(args.config)
 
+    # Access the registry for shutdown cleanup
+    # (create_app stores it in a closure; we re-create a ref here)
+    registry = app.extensions.setdefault("hls_scte35", {}).get("registry")
+
     print(f"hls-scte35 API server starting on http://{args.host}:{args.port}")
     print(f"  Config: {args.config}")
     print(f"  Endpoints:")
@@ -790,7 +1090,24 @@ def main():
     print(f"    DELETE /api/v1/pipelines/<id>      Stop a pipeline")
     print(f"    DELETE /api/v1/pipelines           Stop all pipelines")
 
-    app.run(host=args.host, port=args.port, debug=False)
+    # Use Werkzeug server directly so we can shut it down on SIGTERM
+    from werkzeug.serving import make_server
+
+    server = make_server(args.host, args.port, app, threaded=True)
+    shutdown_event = threading.Event()
+
+    def _graceful_shutdown(signum, frame):
+        sig_name = signal.Signals(signum).name
+        print(f"\n{sig_name} received — stopping all pipelines…")
+        if registry:
+            registry.remove_all()
+        shutdown_event.set()
+        server.shutdown()
+
+    signal.signal(signal.SIGTERM, _graceful_shutdown)
+    signal.signal(signal.SIGINT, _graceful_shutdown)
+
+    server.serve_forever()
 
 
 if __name__ == "__main__":
