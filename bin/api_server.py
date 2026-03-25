@@ -215,8 +215,15 @@ def require_api_key(f):
         if not api_key:
             return f(*args, **kwargs)  # No key configured = no auth
         provided = request.headers.get("X-API-Key", "")
+        if not provided:
+            # Also accept Authorization: Bearer <key> (for Prometheus scraping)
+            auth_header = request.headers.get("Authorization", "")
+            for prefix in ("Bearer ", "ApiKey "):
+                if auth_header.startswith(prefix):
+                    provided = auth_header[len(prefix):]
+                    break
         if not hmac.compare_digest(provided, api_key):
-            return jsonify({"error": "Unauthorized. Provide X-API-Key header."}), 401
+            return jsonify({"error": "Unauthorized. Provide X-API-Key or Authorization: Bearer header."}), 401
         return f(*args, **kwargs)
     return decorated
 
