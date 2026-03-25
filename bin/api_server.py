@@ -490,7 +490,7 @@ class Pipeline:
         self._log_handles.clear()
 
     # Max time to wait for monitor to become ready before starting tsp
-    MONITOR_READY_TIMEOUT = 30.0
+    MONITOR_READY_TIMEOUT = 10.0
     MONITOR_READY_POLL = 0.5
 
     def _launch_processes(self):
@@ -841,18 +841,22 @@ class PipelineRegistry:
         with self._lock:
             pipeline_id = self._generate_id()
             pipeline = Pipeline(pipeline_id, self.config_path, params)
-
-            try:
-                result = pipeline.start()
-            except RuntimeError as e:
-                if metrics:
-                    metrics.inc("pipelines_failed")
-                return {"error": str(e), "status": 500}
-
+            # Register before starting so other requests aren't blocked
+            # during monitor-ready wait
             self._pipelines[pipeline_id] = pipeline
+
+        try:
+            result = pipeline.start()
+        except RuntimeError as e:
+            with self._lock:
+                self._pipelines.pop(pipeline_id, None)
             if metrics:
-                metrics.inc("pipelines_created")
-            return result
+                metrics.inc("pipelines_failed")
+            return {"error": str(e), "status": 500}
+
+        if metrics:
+            metrics.inc("pipelines_created")
+        return result
 
     def get(self, pipeline_id: str) -> dict | None:
         with self._lock:
