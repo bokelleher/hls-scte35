@@ -76,11 +76,10 @@ The `EXT-X-KEY` URI may use a scheme ffmpeg doesn't support (e.g., `skd://` for 
 
 ### API returns 401 Unauthorized
 
-API key auth is enabled when the `API_KEY` environment variable is set on the server. Pass the key via header:
+API key auth is enabled when the `API_KEY` environment variable is set on the server. All endpoints except `/api/v1/health` require the key. Pass it via header:
 ```bash
 curl -H "X-API-Key: your-key" http://localhost:8080/api/v1/pipelines
 ```
-Read-only endpoints (`/health`, `GET /pipelines`, `GET /pipelines/{id}`, `GET /pipeline/status`) do not require authentication.
 
 ### API returns 400 "Invalid URL scheme" or "localhost blocked"
 

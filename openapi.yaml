@@ -10,13 +10,17 @@ info:
 
     ## Authentication
     Set the `API_KEY` environment variable on the server to enable API key authentication.
-    When enabled, mutating endpoints require an `X-API-Key` header. Read-only endpoints
-    (health, list, status) remain open.
+    When enabled, all endpoints except `/api/v1/health` require an `X-API-Key` header.
+
+    ## Rate Limiting
+    Pipeline creation is rate-limited to 5 requests per minute per IP. A maximum of
+    `MAX_PIPELINES` (default 50) concurrent pipelines can exist.
 
     ## SSRF Protection
-    Source URLs are restricted to `http` and `https` schemes. Localhost and cloud metadata
-    IPs are blocked by default. Set `ALLOW_LOCALHOST_SOURCES=1` to override for development.
-  version: 0.7.0
+    Source URLs are validated against loopback, private, link-local, and cloud metadata
+    IP ranges. DNS resolution is checked for hostname-based bypasses.
+    Set `ALLOW_LOCALHOST_SOURCES=1` to override for development.
+  version: 1.0.0
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
@@ -38,8 +42,7 @@ components:
       in: header
       name: X-API-Key
       description: |
-        Required for mutating endpoints when `API_KEY` env var is set on the server.
-        Read-only endpoints do not require authentication.
+        Required for all endpoints (except /api/v1/health) when `API_KEY` env var is set.
 
   schemas:
     PipelineCreateRequest:
@@ -64,10 +67,14 @@ components:
         scte35_pid:
           type: integer
           default: 500
+          minimum: 32
+          maximum: 8191
           description: SCTE-35 PID in the output transport stream
         output_bitrate:
           type: integer
           default: 40000000
+          minimum: 100000
+          maximum: 200000000
           description: Output bitrate in bits per second
         mode:
           type: string
@@ -78,7 +85,9 @@ components:
           type: number
           format: float
           default: 6.0
-          description: Manifest poll interval in seconds. Auto-adapts for low-latency HLS.
+          minimum: 0.5
+          maximum: 300
+          description: Manifest poll interval in seconds (0.5–300). Auto-adapts for low-latency HLS.
         udp_address:
           type: string
           format: ipv4
@@ -329,6 +338,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limit exceeded or pipeline limit reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           description: Failed to start pipeline
           content:
@@ -340,7 +355,6 @@ paths:
       summary: List all pipelines
       operationId: listPipelines
       tags: [Pipelines]
-      security: []
       responses:
         "200":
           description: List of all pipelines
@@ -391,7 +405,6 @@ paths:
       summary: Get pipeline status
       operationId: getPipeline
       tags: [Pipelines]
-      security: []
       responses:
         "200":
           description: Pipeline status
@@ -489,7 +502,6 @@ paths:
       summary: Get pipeline status (legacy)
       operationId: legacyStatus
       tags: [Legacy]
-      security: []
       description: "Returns the status of the first pipeline, or {\"state\": \"stopped\"} if none are running."
       responses:
         "200":

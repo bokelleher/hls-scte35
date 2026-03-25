@@ -8,18 +8,15 @@ The API server exposes metrics at `GET /api/v1/metrics`.
 
 **Prometheus format** (for scraping):
 ```bash
-curl -H "Accept: text/plain" http://localhost:8080/api/v1/metrics
+curl -H "Accept: text/plain" -H "X-API-Key: your-key" http://localhost:8080/api/v1/metrics
 ```
 
 **JSON format** (for debugging or custom integrations):
 ```bash
-curl http://localhost:8080/api/v1/metrics
+curl -H "X-API-Key: your-key" http://localhost:8080/api/v1/metrics
 ```
 
-If `API_KEY` is set, include the auth header:
-```bash
-curl -H "Accept: text/plain" -H "X-API-Key: your-key" http://localhost:8080/api/v1/metrics
-```
+> **Note:** The metrics endpoint requires the `X-API-Key` header when `API_KEY` is set.
 
 ## Available Metrics
 
@@ -37,6 +34,7 @@ curl -H "Accept: text/plain" -H "X-API-Key: your-key" http://localhost:8080/api/
 | `manifest_poll_total` | counter | | Total poll attempts |
 | `manifest_poll_errors_total` | counter | | Failed polls (HTTP errors, timeouts) |
 | `manifest_poll_duration_seconds` | histogram | | Time to fetch and process manifest |
+| `manifest_parse_errors_total` | counter | | Malformed manifest parse failures |
 
 ### PTS Calibration
 
@@ -51,6 +49,14 @@ curl -H "Accept: text/plain" -H "X-API-Key: your-key" http://localhost:8080/api/
 |---|---|---|---|
 | `drm_detected` | gauge | | `0` = no DRM in manifest, `1` = DRM detected |
 | `drm_key_rotations_total` | counter | | Key rotation events (new `EXT-X-KEY` URI) |
+
+### Rendition Tracking
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `rendition_count` | gauge | | Number of renditions in master playlist |
+| `rendition_bandwidth` | gauge | | Bandwidth of currently followed rendition (bps) |
+| `rendition_switches_total` | counter | | Rendition switch events |
 
 ### Pipeline Health
 
@@ -69,6 +75,10 @@ curl -H "Accept: text/plain" -H "X-API-Key: your-key" http://localhost:8080/api/
 | `seen_cues_size` | gauge | | Current size of the CUE deduplication set |
 | `seen_raw_hashes_size` | gauge | | Current size of the raw binary dedup set |
 | `process_start_time_seconds` | gauge | | Unix timestamp when the API server started |
+| `xml_only_injections_total` | counter | | XML injections with no binary backup (unreliable path) |
+| `output_valid` | gauge | `id` | `1` = output TS has video, `0` = invalid/missing |
+| `output_scte35_pid_present` | gauge | `id` | `1` = SCTE-35 PID found in output |
+| `output_truncations_total` | counter | `id` | Output file truncated by disk janitor |
 
 ## Prometheus Setup
 
