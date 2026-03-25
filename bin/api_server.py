@@ -1091,7 +1091,17 @@ def main():
         "--config", default=DEFAULT_CONFIG,
         help="Path to pipeline.toml config file",
     )
+    parser.add_argument(
+        "--generate-api-key", action="store_true",
+        help="Generate a secure API key and exit",
+    )
     args = parser.parse_args()
+
+    if args.generate_api_key:
+        import secrets
+        key = secrets.token_urlsafe(32)
+        print(key)
+        return
 
     app = create_app(args.config)
 

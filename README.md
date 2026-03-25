@@ -193,7 +193,7 @@ docker run -p 8080:8080 hls-scte35
 
 # With API key, pipeline limit, and custom config
 docker run -p 8080:8080 \
-  -e API_KEY=mysecret \
+  -e API_KEY=$(python3 bin/api_server.py --generate-api-key) \
   -e MAX_PIPELINES=130 \
   -v ./config:/opt/hls-scte35/config:ro \
   hls-scte35
@@ -602,6 +602,29 @@ curl -X DELETE -H "X-API-Key: $API_KEY" http://localhost:8080/api/v1/pipelines
 | `DRM_KEY` | *(unset)* | Pre-shared AES-128 decryption key (32 hex digits). Passed to ffmpeg for DRM decryption. |
 | `PIPELINE_CONFIG` | `/opt/hls-scte35/config/pipeline.toml` | Path to the TOML config file. |
 | `ALLOW_LOCALHOST_SOURCES` | `1` (Docker) | Set to `1` to allow `localhost` / `127.0.0.1` source URLs (bypasses SSRF protection). |
+
+### API Key Setup
+
+Generate a secure key:
+```bash
+python3 bin/api_server.py --generate-api-key
+# => Ek7_2xR9...  (43-character URL-safe token)
+```
+
+Then use it:
+```bash
+# Docker
+docker run -e API_KEY=$(python3 bin/api_server.py --generate-api-key) -p 8080:8080 hls-scte35
+
+# Or export it
+export API_KEY=$(python3 bin/api_server.py --generate-api-key)
+python3 bin/api_server.py --port 8080
+
+# All API calls require the header
+curl -H "X-API-Key: $API_KEY" http://localhost:8080/api/v1/pipelines
+```
+
+When `API_KEY` is not set, authentication is disabled and all endpoints are open. This is suitable for development but **not for production**.
 
 ## Configuration
 
