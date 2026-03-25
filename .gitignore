@@ -18,6 +18,10 @@ inject/*/
 .vscode/
 .idea/
 
+# Secrets
+.env
+.env.*
+
 # OS
 .DS_Store
 Thumbs.db
